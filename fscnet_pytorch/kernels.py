@@ -10,6 +10,7 @@ import torch
 
 
 _ACTIVATED_KERNELS: set[str] = set()
+_KERNEL_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 
 
 def _mark_kernel_active(name: str) -> None:
@@ -26,6 +27,14 @@ def reset_activated_kernel_names() -> None:
     """Clear runtime kernel activation state."""
 
     _ACTIVATED_KERNELS.clear()
+
+
+def _dtype_name(dtype: torch.dtype) -> str:
+    return str(dtype)
+
+
+def _is_half_dtype_name(dtype_name: str) -> bool:
+    return dtype_name in ("torch.float16", "torch.bfloat16")
 
 
 def _arch() -> str:
@@ -47,7 +56,7 @@ def _can_use_progressive_target_kernel(
     return (
         input_ri.is_cuda
         and target_ri.is_cuda
-        and input_ri.dtype in (torch.float32, torch.bfloat16)
+        and input_ri.dtype in _KERNEL_DTYPES
         and target_ri.dtype == input_ri.dtype
         and input_ri.ndim == 4
         and target_ri.ndim == 4
@@ -85,7 +94,7 @@ def make_progressive_targets_pyptx(
                 frames,
                 int(window),
                 float(eps),
-                str(input_c.dtype),
+                _dtype_name(input_c.dtype),
             )(
                 input_c, target_c
             )
@@ -102,21 +111,31 @@ def _progressive_target_kernel(
     bsz: int, freq: int, frames: int, window: int, eps: float, dtype_name: str
 ):
     from pyptx import Tile, kernel, ptx, reg
-    from pyptx.types import b16, bf16, f32, u32
+    from pyptx.types import b16, bf16, f16, f32, u32
 
     block = 128
     grid = ((frames + block - 1) // block, freq, bsz)
     radius = window // 2
     arch = _arch()
     version = (8, 7) if arch.startswith("sm_100") else None
-    data_t = bf16 if dtype_name == "torch.bfloat16" else f32
-    elem_size = 2 if dtype_name == "torch.bfloat16" else 4
+    data_t = (
+        bf16
+        if dtype_name == "torch.bfloat16"
+        else f16
+        if dtype_name == "torch.float16"
+        else f32
+    )
+    elem_size = 2 if _is_half_dtype_name(dtype_name) else 4
 
     def load_data(dst, ptr, elem_idx):
         if dtype_name == "torch.bfloat16":
             tmp = reg.scalar(b16)
             ptx.inst.ld.global_.b16(tmp, ptx.addr(ptr + elem_idx * elem_size))
             ptx.inst.cvt.f32.bf16(dst, tmp)
+        elif dtype_name == "torch.float16":
+            tmp = reg.scalar(b16)
+            ptx.inst.ld.global_.b16(tmp, ptx.addr(ptr + elem_idx * elem_size))
+            ptx.inst.cvt.f32.f16(dst, tmp)
         else:
             ptx.inst.ld.global_.f32(dst, ptx.addr(ptr + elem_idx * elem_size))
 
@@ -124,6 +143,10 @@ def _progressive_target_kernel(
         if dtype_name == "torch.bfloat16":
             tmp = reg.scalar(b16)
             ptx.inst.cvt.rn.bf16.f32(tmp, value)
+            ptx.inst.st.global_.b16(ptx.addr(ptr + elem_idx * elem_size), tmp)
+        elif dtype_name == "torch.float16":
+            tmp = reg.scalar(b16)
+            ptx.inst.cvt.rn.f16.f32(tmp, value)
             ptx.inst.st.global_.b16(ptx.addr(ptr + elem_idx * elem_size), tmp)
         else:
             ptx.inst.st.global_.f32(ptx.addr(ptr + elem_idx * elem_size), value)
@@ -284,7 +307,7 @@ def _can_use_global_layer_norm_kernel(
         x.is_cuda
         and weight.is_cuda
         and bias.is_cuda
-        and x.dtype in (torch.float32, torch.bfloat16)
+        and x.dtype in _KERNEL_DTYPES
         and weight.dtype == torch.float32
         and bias.dtype == torch.float32
         and x.ndim == 4
@@ -300,7 +323,7 @@ class _GlobalLayerNormFn(torch.autograd.Function):
     ) -> torch.Tensor:
         bsz, channels, freq, frames = x.shape
         kernel = _global_layer_norm_kernel(
-            bsz, channels, freq, frames, float(eps), str(x.dtype)
+            bsz, channels, freq, frames, float(eps), _dtype_name(x.dtype)
         )
         out, mean, rstd = kernel(x, weight.contiguous(), bias.contiguous())
         ctx.save_for_backward(x, weight, mean, rstd)
@@ -313,7 +336,7 @@ class _GlobalLayerNormFn(torch.autograd.Function):
         x, weight, mean, rstd = ctx.saved_tensors
         bsz, channels, freq, frames = x.shape
         n = float(channels * freq * frames)
-        compute_dtype = torch.float32 if x.dtype == torch.bfloat16 else x.dtype
+        compute_dtype = torch.float32 if x.dtype in (torch.float16, torch.bfloat16) else x.dtype
 
         mean_v = mean.view(bsz, 1, 1, 1)
         rstd_v = rstd.view(bsz, 1, 1, 1)
@@ -347,7 +370,7 @@ def _global_layer_norm_kernel(
     bsz: int, channels: int, freq: int, frames: int, eps: float, dtype_name: str
 ):
     from pyptx import Tile, kernel, ptx, reg, smem
-    from pyptx.types import b16, bf16, f32, u32
+    from pyptx.types import b16, bf16, f16, f32, u32
 
     block = 256
     num_warps = block // 32
@@ -355,14 +378,24 @@ def _global_layer_norm_kernel(
     channel_stride = freq * frames
     arch = _arch()
     version = (8, 7) if arch.startswith("sm_100") else None
-    data_t = bf16 if dtype_name == "torch.bfloat16" else f32
-    elem_size = 2 if dtype_name == "torch.bfloat16" else 4
+    data_t = (
+        bf16
+        if dtype_name == "torch.bfloat16"
+        else f16
+        if dtype_name == "torch.float16"
+        else f32
+    )
+    elem_size = 2 if _is_half_dtype_name(dtype_name) else 4
 
     def load_x(dst, ptr, elem_idx):
         if dtype_name == "torch.bfloat16":
             tmp = reg.scalar(b16)
             ptx.inst.ld.global_.b16(tmp, ptx.addr(ptr + elem_idx * elem_size))
             ptx.inst.cvt.f32.bf16(dst, tmp)
+        elif dtype_name == "torch.float16":
+            tmp = reg.scalar(b16)
+            ptx.inst.ld.global_.b16(tmp, ptx.addr(ptr + elem_idx * elem_size))
+            ptx.inst.cvt.f32.f16(dst, tmp)
         else:
             ptx.inst.ld.global_.f32(dst, ptx.addr(ptr + elem_idx * elem_size))
 
@@ -370,6 +403,10 @@ def _global_layer_norm_kernel(
         if dtype_name == "torch.bfloat16":
             tmp = reg.scalar(b16)
             ptx.inst.cvt.rn.bf16.f32(tmp, value)
+            ptx.inst.st.global_.b16(ptx.addr(ptr + elem_idx * elem_size), tmp)
+        elif dtype_name == "torch.float16":
+            tmp = reg.scalar(b16)
+            ptx.inst.cvt.rn.f16.f32(tmp, value)
             ptx.inst.st.global_.b16(ptx.addr(ptr + elem_idx * elem_size), tmp)
         else:
             ptx.inst.st.global_.f32(ptx.addr(ptr + elem_idx * elem_size), value)
@@ -514,7 +551,7 @@ def _can_use_rope_qk_norm_kernel(q: torch.Tensor, k: torch.Tensor) -> bool:
     return (
         q.is_cuda
         and k.is_cuda
-        and q.dtype in (torch.float32, torch.bfloat16)
+        and q.dtype in _KERNEL_DTYPES
         and k.dtype == q.dtype
         and q.ndim == 4
         and k.shape == q.shape
@@ -535,7 +572,7 @@ class _RoPEQKNormFn(torch.autograd.Function):
     ) -> Any:
         rows, heads, frames, dim_head = q.shape
         kernel = _rope_qk_norm_kernel(
-            rows, heads, frames, dim_head, float(eps), str(q.dtype)
+            rows, heads, frames, dim_head, float(eps), _dtype_name(q.dtype)
         )
         q_out, k_out = kernel(q, k, sin, cos)
         ctx.save_for_backward(q, k)
@@ -557,8 +594,12 @@ def _rope_qk_norm_backward(
     x: torch.Tensor, grad_out: torch.Tensor, scale: float, eps: float
 ) -> torch.Tensor:
     out_dtype = x.dtype
-    x_compute = x.float() if x.dtype == torch.bfloat16 else x
-    grad_compute = grad_out.float() if grad_out.dtype == torch.bfloat16 else grad_out
+    x_compute = x.float() if x.dtype in (torch.float16, torch.bfloat16) else x
+    grad_compute = (
+        grad_out.float()
+        if grad_out.dtype in (torch.float16, torch.bfloat16)
+        else grad_out
+    )
     z = _apply_rope_torch(x_compute)
     norm = z.norm(dim=-1, keepdim=True).clamp_min(eps)
     grad_z = scale * (
@@ -601,7 +642,7 @@ def _rope_qk_norm_kernel(
     rows: int, heads: int, frames: int, dim_head: int, eps: float, dtype_name: str
 ):
     from pyptx import Tile, kernel, ptx, reg, smem
-    from pyptx.types import b16, bf16, f32, u32
+    from pyptx.types import b16, bf16, f16, f32, u32
 
     block = 32
     half = dim_head // 2
@@ -609,14 +650,24 @@ def _rope_qk_norm_kernel(
     scale = dim_head**0.5
     arch = _arch()
     version = (8, 7) if arch.startswith("sm_100") else None
-    data_t = bf16 if dtype_name == "torch.bfloat16" else f32
-    elem_size = 2 if dtype_name == "torch.bfloat16" else 4
+    data_t = (
+        bf16
+        if dtype_name == "torch.bfloat16"
+        else f16
+        if dtype_name == "torch.float16"
+        else f32
+    )
+    elem_size = 2 if _is_half_dtype_name(dtype_name) else 4
 
     def load_data(dst, ptr, elem_idx):
         if dtype_name == "torch.bfloat16":
             tmp = reg.scalar(b16)
             ptx.inst.ld.global_.b16(tmp, ptx.addr(ptr + elem_idx * elem_size))
             ptx.inst.cvt.f32.bf16(dst, tmp)
+        elif dtype_name == "torch.float16":
+            tmp = reg.scalar(b16)
+            ptx.inst.ld.global_.b16(tmp, ptx.addr(ptr + elem_idx * elem_size))
+            ptx.inst.cvt.f32.f16(dst, tmp)
         else:
             ptx.inst.ld.global_.f32(dst, ptx.addr(ptr + elem_idx * elem_size))
 
@@ -624,6 +675,10 @@ def _rope_qk_norm_kernel(
         if dtype_name == "torch.bfloat16":
             tmp = reg.scalar(b16)
             ptx.inst.cvt.rn.bf16.f32(tmp, value)
+            ptx.inst.st.global_.b16(ptx.addr(ptr + elem_idx * elem_size), tmp)
+        elif dtype_name == "torch.float16":
+            tmp = reg.scalar(b16)
+            ptx.inst.cvt.rn.f16.f32(tmp, value)
             ptx.inst.st.global_.b16(ptx.addr(ptr + elem_idx * elem_size), tmp)
         else:
             ptx.inst.st.global_.f32(ptx.addr(ptr + elem_idx * elem_size), value)

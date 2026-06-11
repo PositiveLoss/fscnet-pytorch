@@ -1,4 +1,4 @@
-# FSC-Net PyTorch implementation
+# Full-Spectrum Context Network (FSC-Net) PyTorch implementation
 
 This is a runnable implementation of the paper [**“FSC-Net: Integrating Fast Fourier Convolutions and Progressive Learning for Speech Bandwidth Extension.”**](https://arxiv.org/abs/2606.06962)
 
@@ -101,7 +101,7 @@ uv run python train.py \
 
 Use `--precision bf16` for bf16 CUDA autocast, or `--precision fp16` for
 explicit fp16 autocast. The legacy `--amp` flag remains an alias for fp16.
-Optional pyptx kernels support fp32 and bf16 training. Progressive target
+Optional pyptx kernels support fp32, fp16, and bf16 training. Progressive target
 generation activates automatically on CUDA. Set `FSCNET_ENABLE_PYPTX_NORM=1`
 to enable the global layer norm kernel, and set `FSCNET_ENABLE_PYPTX_ROPE_QK=1`
 to enable the fused RoPE/QK-normalization kernel for v2 attention models.

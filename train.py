@@ -163,7 +163,7 @@ def print_kernel_configuration(
     device: torch.device,
     precision_name: str,
 ) -> None:
-    kernel_precision = precision_name in ("fp32", "bf16")
+    kernel_precision = precision_name in ("fp32", "fp16", "bf16")
     progressive = "auto" if device.type == "cuda" and kernel_precision else "inactive"
     norm = (
         "enabled"

@@ -1,0 +1,50 @@
+name: Python checks
+
+on:
+  pull_request:
+    paths:
+      - "**/*.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "justfile"
+      - ".python-version"
+      - ".github/workflows/python-checks.yml"
+  push:
+    paths:
+      - "**/*.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "justfile"
+      - ".python-version"
+      - ".github/workflows/python-checks.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  lint-typecheck:
+    name: Ruff and Pyrefly
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - name: Sync environment
+        run: uv sync --all-groups --locked
+
+      - name: Run Ruff
+        run: uv run ruff check .
+
+      - name: Run Pyrefly
+        run: uv run pyrefly check

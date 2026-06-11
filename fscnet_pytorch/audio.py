@@ -63,7 +63,7 @@ def resample_audio(wav: torch.Tensor, orig_sr: int, new_sr: int) -> torch.Tensor
     was_1d = wav.ndim == 1
     wav_2d = ensure_2d_audio(wav)
 
-    if _TORCHAUDIO_OK:
+    if _TORCHAUDIO_OK and torchaudio is not None:
         out = torchaudio.functional.resample(wav_2d, orig_sr, new_sr)
         return out.squeeze(0) if was_1d else out
 
@@ -89,7 +89,9 @@ def load_audio(
     if not path.exists():
         raise FileNotFoundError(path)
 
-    if _TORCHAUDIO_OK:
+    wav: torch.Tensor | None
+    sr = 0
+    if _TORCHAUDIO_OK and torchaudio is not None:
         try:
             wav, sr = torchaudio.load(str(path))
             wav = wav.to(torch.float32)
@@ -122,7 +124,7 @@ def save_audio(path: str | Path, wav: torch.Tensor, sample_rate: int) -> None:
     wav = torch.nan_to_num(wav).clamp(-1.0, 1.0)
     wav_2d = ensure_2d_audio(wav)
 
-    if _TORCHAUDIO_OK:
+    if _TORCHAUDIO_OK and torchaudio is not None:
         try:
             torchaudio.save(str(path), wav_2d, sample_rate)
             return

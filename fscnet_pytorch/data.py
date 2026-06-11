@@ -90,9 +90,9 @@ class BandwidthExtensionDataset(Dataset):
         random_crop: bool = True,
     ) -> None:
         self.items = read_manifest(manifest)
-        self.target_sr = int(target_sr)
-        self.input_sr = int(input_sr)
-        self.segment_samples = int(round(segment_seconds * target_sr))
+        self.target_sr = target_sr
+        self.input_sr = input_sr
+        self.segment_samples = round(segment_seconds * target_sr)
         self.normalize = normalize
         self.random_crop = random_crop
 

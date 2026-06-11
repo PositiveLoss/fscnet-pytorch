@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import onnx
@@ -31,7 +32,7 @@ class FSCNetONNXWrapper(torch.nn.Module):
         if output not in {"wav", "spectrogram"}:
             raise ValueError(f"Unsupported output kind: {output}")
         self.model = model
-        self.sample_length = int(sample_length)
+        self.sample_length = sample_length
         self.output = output
 
     def forward(self, wav: torch.Tensor) -> torch.Tensor:
@@ -170,7 +171,9 @@ def verify_onnx(
 
     with torch.no_grad():
         expected = wrapper(sample).detach().cpu().numpy()
-    actual = session.run(None, {"wav": sample.detach().cpu().numpy()})[0]
+    actual = cast(
+        np.ndarray, session.run(None, {"wav": sample.detach().cpu().numpy()})[0]
+    )
     max_abs = float(np.max(np.abs(actual - expected)))
     if not np.allclose(actual, expected, rtol=rtol, atol=atol):
         raise RuntimeError(

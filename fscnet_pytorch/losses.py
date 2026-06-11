@@ -52,7 +52,7 @@ def make_progressive_targets(
         if window <= 1:
             mag = mag_y
         else:
-            mag = (mag_x + sliding_average_frequency(residual, int(window))).clamp_min(
+            mag = (mag_x + sliding_average_frequency(residual, window)).clamp_min(
                 0.0
             )
         spec = mag * phase_y
@@ -70,7 +70,7 @@ class MultiResolutionSTFTLoss(nn.Module):
         eps: float = 1.0e-7,
     ) -> None:
         super().__init__()
-        self.fft_sizes = tuple(int(v) for v in fft_sizes)
+        self.fft_sizes = tuple(fft_sizes)
         self.hop_ratio = hop_ratio
         self.eps = eps
 
@@ -81,7 +81,7 @@ class MultiResolutionSTFTLoss(nn.Module):
             target = target.unsqueeze(0)
         total = pred.new_tensor(0.0)
         for n_fft in self.fft_sizes:
-            hop = max(1, int(round(n_fft * self.hop_ratio)))
+            hop = max(1, round(n_fft * self.hop_ratio))
             win = n_fft
             pred_spec = stft_complex(pred, n_fft=n_fft, hop_length=hop, win_length=win)
             target_spec = stft_complex(
@@ -149,7 +149,7 @@ class StageReconstructionLoss(nn.Module):
     ) -> None:
         super().__init__()
         self.cfg = cfg
-        self.windows = tuple(int(v) for v in windows)
+        self.windows = tuple(windows)
         self.weights = weights
         self.mrstft = MultiResolutionSTFTLoss(mrstft_fft_sizes)
         self.lsd = LogSpectralDistance(cfg.n_fft, cfg.hop_length, cfg.win_length)

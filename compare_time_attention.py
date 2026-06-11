@@ -54,6 +54,7 @@ def time_forward(
     iters: int,
 ) -> tuple[torch.Tensor, float]:
     module.eval()
+    y = module(x)
     for _ in range(warmup):
         y = module(x)
     sync(x.device)

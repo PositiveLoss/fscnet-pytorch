@@ -13,11 +13,11 @@ import argparse
 import json
 import math
 from pathlib import Path
-from typing import Sequence
+from typing import Sequence, cast
 
 import torch
 from torch import nn
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -197,7 +197,7 @@ def save_checkpoint(
     payload = {
         "model": model.state_dict(),
         "config": model.cfg.to_dict(),
-        "windows": tuple(int(w) for w in windows),
+        "windows": tuple(windows),
         "epoch": epoch,
         "step": step,
         "args": vars(args),
@@ -375,7 +375,7 @@ def main() -> None:
         encoding="utf-8",
     )
 
-    scaler = GradScaler(enabled=args.amp and device.type == "cuda")
+    scaler = GradScaler("cuda", enabled=args.amp and device.type == "cuda")
     model.train()
 
     for epoch in range(start_epoch, args.epochs):
@@ -401,24 +401,28 @@ def main() -> None:
             use_adv = discriminators is not None and global_step >= args.adv_start_step
             if use_adv:
                 assert optimizer_d is not None
-                set_requires_grad(discriminators, True)
+                discriminators_active = cast(nn.ModuleList, discriminators)
+                set_requires_grad(discriminators_active, True)
                 optimizer_d.zero_grad(set_to_none=True)
                 with torch.autocast(
                     device_type="cuda", enabled=args.amp and device.type == "cuda"
                 ):
                     d_loss = lr.new_tensor(0.0)
                     for disc, fake_wav, real_wav in zip(
-                        discriminators, pred_wavs, target_wavs
+                        discriminators_active, pred_wavs, target_wavs
                     ):
                         d_loss = d_loss + discriminator_lsgan_loss(
-                            disc, lr, real_wav, fake_wav.detach()
+                            cast(MultiScaleDiscriminator, disc),
+                            lr,
+                            real_wav,
+                            fake_wav.detach(),
                         )
                     d_loss = d_loss / len(pred_wavs)
-                scaler.scale(d_loss).backward()
+                cast(torch.Tensor, scaler.scale(d_loss)).backward()
                 scaler.unscale_(optimizer_d)
                 if args.clip_grad_norm > 0:
                     nn.utils.clip_grad_norm_(
-                        discriminators.parameters(), args.clip_grad_norm
+                        discriminators_active.parameters(), args.clip_grad_norm
                     )
                 scaler.step(optimizer_d)
                 if scheduler_d is not None:
@@ -433,12 +437,17 @@ def main() -> None:
                 adv_val = lr.new_tensor(0.0)
                 fm_val = lr.new_tensor(0.0)
                 if use_adv:
-                    set_requires_grad(discriminators, False)
+                    discriminators_active = cast(nn.ModuleList, discriminators)
+                    set_requires_grad(discriminators_active, False)
                     for disc, fake_wav, real_wav in zip(
-                        discriminators, pred_wavs, target_wavs
+                        discriminators_active, pred_wavs, target_wavs
                     ):
                         adv, fm = generator_lsgan_fm_loss(
-                            disc, lr, real_wav, fake_wav, fm_weight=args.fm_weight
+                            cast(MultiScaleDiscriminator, disc),
+                            lr,
+                            real_wav,
+                            fake_wav,
+                            fm_weight=args.fm_weight,
                         )
                         adv_val = adv_val + adv
                         fm_val = fm_val + fm
@@ -446,7 +455,7 @@ def main() -> None:
                     fm_val = fm_val / len(pred_wavs)
                     loss_g = loss_g + args.adv_weight * (adv_val + fm_val)
 
-            scaler.scale(loss_g).backward()
+            cast(torch.Tensor, scaler.scale(loss_g)).backward()
             scaler.unscale_(optimizer_g)
             if args.clip_grad_norm > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
@@ -454,7 +463,8 @@ def main() -> None:
             scaler.update()
             scheduler_g.step()
             if use_adv:
-                set_requires_grad(discriminators, True)
+                discriminators_active = cast(nn.ModuleList, discriminators)
+                set_requires_grad(discriminators_active, True)
 
             global_step += 1
             pbar.set_postfix(

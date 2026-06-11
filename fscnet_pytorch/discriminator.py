@@ -27,7 +27,7 @@ class ScaleDiscriminator(nn.Module):
         ]
         strides = [1, 4, 4, 4, 1]
         kernels = [15, 41, 41, 41, 5]
-        layers = []
+        layers: list[nn.Module] = []
         prev = in_channels
         for ch, stride, kernel in zip(channels, strides, kernels):
             layers.append(
@@ -67,7 +67,7 @@ class MultiScaleDiscriminator(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> List[Tuple[torch.Tensor, List[torch.Tensor]]]:
-        outs = []
+        outs: List[Tuple[torch.Tensor, List[torch.Tensor]]] = []
         h = x
         for disc in self.discriminators:
             outs.append(disc(h))

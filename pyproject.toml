@@ -9,7 +9,6 @@ dependencies = [
     "onnx>=1.21.0",
     "onnxruntime-gpu[cuda]>=1.26.0",
     "onnxscript>=0.7.0",
-    "ruff>=0.15.16",
     "scipy>=1.17.1",
     "soundfile>=0.14.0",
     "torch>=2.12.0",
@@ -17,3 +16,14 @@ dependencies = [
     "torchcodec>=0.14.0",
     "tqdm>=4.68.2",
 ]
+
+[dependency-groups]
+dev = [
+    "pyrefly>=1.0.0",
+    "ruff>=0.15.16",
+    "types-tqdm>=4.68.0.20260608",
+]
+
+[tool.pyrefly]
+project-includes = ["**/*.py"]
+python-version = "3.14"

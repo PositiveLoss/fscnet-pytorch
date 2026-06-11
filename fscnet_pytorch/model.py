@@ -12,7 +12,7 @@ module exposes the architectural choices as config fields.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Literal, Tuple, overload
 
 import torch
 from torch import nn
@@ -184,7 +184,7 @@ class FastFourierConv(nn.Module):
         if not (0.0 < ratio_g < 1.0):
             raise ValueError("ratio_g must be between 0 and 1")
         self.channels = channels
-        self.c_g = max(1, int(round(channels * ratio_g)))
+        self.c_g = max(1, round(channels * ratio_g))
         self.c_l = channels - self.c_g
         if self.c_l <= 0:
             self.c_l = 1
@@ -290,7 +290,7 @@ class TimeSelfAttentionV2(nn.Module):
         self.dim_head = channels // heads
         self.qk_norm = qk_norm
         self.rope = rope and self.dim_head % 2 == 0
-        self.dropout_p = float(dropout)
+        self.dropout_p = dropout
         self.norm = nn.LayerNorm(channels)
         self.to_qkv = nn.Linear(channels, channels * 3)
         self.to_out = nn.Linear(channels, channels)
@@ -349,6 +349,7 @@ class TFFFCBlock(nn.Module):
         self.ffc1 = ResidualFFC(cfg.channels, cfg.ffc_ratio, cfg.dropout)
         self.ffc2 = ResidualFFC(cfg.channels, cfg.ffc_ratio, cfg.dropout)
         self.intra_rnn = IntraFrequencyRNN(cfg.channels, cfg.rnn_hidden, cfg.dropout)
+        self.attn: nn.Module
         if cfg.time_attention == "v1":
             self.attn = TimeSelfAttention(
                 cfg.channels, cfg.attention_heads, cfg.dropout
@@ -434,7 +435,19 @@ class FSCNet(nn.Module):
         ri = complex_to_ri(spec)
         return spec, ri
 
-    def forward(self, wav_lr_up: torch.Tensor, return_all: bool = False):
+    @overload
+    def forward(
+        self, wav_lr_up: torch.Tensor, return_all: Literal[False] = False
+    ) -> torch.Tensor: ...
+
+    @overload
+    def forward(
+        self, wav_lr_up: torch.Tensor, return_all: Literal[True]
+    ) -> tuple[list[torch.Tensor], torch.Tensor]: ...
+
+    def forward(
+        self, wav_lr_up: torch.Tensor, return_all: bool = False
+    ) -> torch.Tensor | tuple[list[torch.Tensor], torch.Tensor]:
         """Map upsampled narrow-band waveform [B,T] to complex spectra.
 
         Returns:

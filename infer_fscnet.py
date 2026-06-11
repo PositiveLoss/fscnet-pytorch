@@ -56,8 +56,8 @@ def enhance_chunked(
     if chunk_seconds <= 0:
         return model.enhance(wav)
 
-    chunk = int(round(chunk_seconds * cfg.target_sr))
-    overlap = int(round(overlap_seconds * cfg.target_sr))
+    chunk = round(chunk_seconds * cfg.target_sr)
+    overlap = round(overlap_seconds * cfg.target_sr)
     if chunk <= 0:
         raise ValueError("chunk_seconds produced zero samples")
     if overlap < 0 or overlap >= chunk:

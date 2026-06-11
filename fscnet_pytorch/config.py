@@ -122,7 +122,7 @@ def resolve_model_config(
     elif isinstance(progressive_windows, str):
         windows = parse_progressive_windows(progressive_windows)
     else:
-        windows = tuple(int(w) for w in progressive_windows)
+        windows = progressive_windows
 
     if len(windows) != cfg.num_blocks:
         raise ValueError(

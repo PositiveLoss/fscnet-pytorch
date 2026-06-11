@@ -31,7 +31,7 @@ JSONL:
 
 ```jsonl
 {"hr_path":"/path/to/clean_48k_001.wav"}
-{"hr_path":"/path/to/clean_48k_002.wav", "lr_path":"/path/to/precomputed_4k_or_16k.wav"}
+{"hr_path":"/path/to/clean_48k_002.wav", "lr_path":"/path/to/precomputed_4k_bandlimited_48k.wav"}
 ```
 
 If `lr_path` is absent, the dataset creates narrowband input on the fly:
@@ -55,9 +55,11 @@ python generate_resampled_manifest.py \
 ```
 
 The script writes `data/fscnet_4k48/manifest.jsonl` with `hr_path` and
-`lr_path` entries. `--workers 0` uses all available CPU cores; set
-`--workers 1` for sequential processing. Use that manifest directly for
-training:
+`lr_path` entries. Files under `lr_4000` are stored at `--target_sr`; the
+`4000` means they were downsampled through a 4 kHz bottleneck and resampled
+back to the target rate for model input. `--workers 0` uses all available CPU
+cores; set `--workers 1` for sequential processing. Use that manifest directly
+for training:
 
 ```bash
 python train.py \

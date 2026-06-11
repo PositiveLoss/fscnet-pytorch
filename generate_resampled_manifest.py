@@ -14,8 +14,10 @@ from __future__ import annotations
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 import json
+import logging
 import os
 from pathlib import Path
+import time
 from typing import TYPE_CHECKING, Iterable, Literal, Sequence
 
 if TYPE_CHECKING:
@@ -26,6 +28,7 @@ from fscnet_pytorch.cli import option, run
 
 DEFAULT_EXTENSIONS = (".wav", ".flac", ".ogg", ".aiff", ".aif", ".aifc")
 Quality = Literal["fast", "balanced", "best"]
+LOGGER = logging.getLogger("generate_resampled_manifest")
 
 
 @dataclass(frozen=True)
@@ -44,6 +47,7 @@ class WorkItem:
     chunk_frames: int
     absolute_paths: bool
     overwrite: bool
+    log_level: str
 
 
 @dataclass(frozen=True)
@@ -63,17 +67,47 @@ def audio_paths(input_dir: Path, extensions: Sequence[str]) -> list[Path]:
 
 
 def load_audio(path: Path, channels: int) -> tuple[np.ndarray, int]:
-    import numpy as np
     import soundfile as sf
 
-    data, sample_rate = sf.read(path, always_2d=True, dtype="float32")
+    try:
+        data, sample_rate = sf.read(path, always_2d=True, dtype="float32")
+        LOGGER.debug("Decoded %s with soundfile", path)
+    except sf.SoundFileError as exc:
+        LOGGER.warning("soundfile could not decode %s: %s", path, exc)
+        LOGGER.info("Falling back to torchaudio for %s", path)
+        data, sample_rate = load_audio_with_torchaudio(path)
+    normalized = normalize_channels(data, channels)
+    LOGGER.info(
+        "Loaded %s: sr=%d frames=%d channels=%d",
+        path,
+        int(sample_rate),
+        normalized.shape[0],
+        normalized.shape[1],
+    )
+    return normalized, int(sample_rate)
+
+
+def load_audio_with_torchaudio(path: Path) -> tuple[np.ndarray, int]:
+    import numpy as np
+    import torchaudio
+
+    waveform, sample_rate = torchaudio.load(str(path))
+    LOGGER.debug("Decoded %s with torchaudio", path)
+    data = waveform.transpose(0, 1).contiguous().numpy()
+    return np.ascontiguousarray(data, dtype=np.float32), int(sample_rate)
+
+
+def normalize_channels(audio: np.ndarray, channels: int) -> np.ndarray:
+    import numpy as np
+
+    data = np.asarray(audio, dtype=np.float32)
     if channels == 1:
         data = data.mean(axis=1, keepdims=True)
     elif data.shape[1] == 1:
         data = np.repeat(data, 2, axis=1)
     elif data.shape[1] > channels:
         data = data[:, :channels]
-    return np.ascontiguousarray(data, dtype=np.float32), int(sample_rate)
+    return np.ascontiguousarray(data, dtype=np.float32)
 
 
 def write_audio(path: Path, audio: np.ndarray, sample_rate: int) -> None:
@@ -169,6 +203,8 @@ def output_paths(
 
 
 def process_file(item: WorkItem) -> WorkResult:
+    configure_logging(item.log_level)
+    started = time.perf_counter()
     hr_path, lr_path = output_paths(
         item.source, item.input_dir, item.out_dir, item.input_sr
     )
@@ -181,11 +217,28 @@ def process_file(item: WorkItem) -> WorkResult:
         ),
     }
     if not item.overwrite and hr_path.exists() and lr_path.exists():
+        LOGGER.info(
+            "[%d/%d] Reusing existing outputs for %s",
+            item.index,
+            item.total,
+            item.source,
+        )
+        LOGGER.debug("Existing HR: %s", hr_path)
+        LOGGER.debug("Existing LR: %s", lr_path)
         return WorkResult(
             item.index, row, f"[{item.index}/{item.total}] reused {lr_path}"
         )
 
+    LOGGER.info("[%d/%d] Processing %s", item.index, item.total, item.source)
     audio, source_sr = load_audio(item.source, item.channels)
+    LOGGER.info(
+        "[%d/%d] Resampling HR %s: %d Hz -> %d Hz",
+        item.index,
+        item.total,
+        item.source,
+        source_sr,
+        item.target_sr,
+    )
     hr = resample_audio(
         audio,
         source_sr,
@@ -194,6 +247,14 @@ def process_file(item: WorkItem) -> WorkResult:
         item.quality,
         item.backend,
         item.chunk_frames,
+    )
+    LOGGER.info(
+        "[%d/%d] Creating narrowband input: %d Hz -> %d Hz -> %d Hz",
+        item.index,
+        item.total,
+        item.target_sr,
+        item.input_sr,
+        item.target_sr,
     )
     lr_low = resample_audio(
         hr,
@@ -214,10 +275,22 @@ def process_file(item: WorkItem) -> WorkResult:
         item.chunk_frames,
     )
 
+    LOGGER.info("[%d/%d] Writing HR %s", item.index, item.total, hr_path)
     write_audio(hr_path, hr, item.target_sr)
+    LOGGER.info("[%d/%d] Writing LR %s", item.index, item.total, lr_path)
     write_audio(lr_path, lr, item.target_sr)
+    elapsed = time.perf_counter() - started
+    LOGGER.info(
+        "[%d/%d] Finished %s in %.2fs",
+        item.index,
+        item.total,
+        item.source,
+        elapsed,
+    )
     return WorkResult(
-        item.index, row, f"[{item.index}/{item.total}] {item.source} -> {lr_path}"
+        item.index,
+        row,
+        f"[{item.index}/{item.total}] {item.source} -> {lr_path} ({elapsed:.2f}s)",
     )
 
 
@@ -227,6 +300,18 @@ def resolve_workers(workers: int) -> int:
     if workers == 0:
         return os.cpu_count() or 1
     return workers
+
+
+def configure_logging(log_level: str) -> None:
+    level_name = log_level.upper()
+    level = getattr(logging, level_name, None)
+    if not isinstance(level, int):
+        raise ValueError(f"Unknown --log-level {log_level!r}")
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s [%(processName)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
 
 def main(
@@ -299,9 +384,16 @@ def main(
         help="parallel worker processes; 0 uses os.cpu_count(), 1 disables concurrency",
         min=0,
     ),
+    log_level: str = option(
+        "INFO",
+        "--log-level",
+        "--log_level",
+        help="logging level: DEBUG, INFO, WARNING, ERROR, or CRITICAL",
+    ),
     limit: int | None = option(None, "--limit", help="process at most N files", min=1),
 ) -> None:
     """Generate an FSC-Net training manifest with fast-audio-resampler."""
+    configure_logging(log_level)
     if channels not in {1, 2}:
         raise ValueError("--channels must be 1 or 2")
 
@@ -315,13 +407,18 @@ def main(
     extension_values = tuple(
         ext.strip().lower() for ext in extensions.split(",") if ext
     )
+    LOGGER.info("Scanning %s for extensions: %s", input_dir, ", ".join(extension_values))
     sources = audio_paths(input_dir, extension_values)
     if limit is not None:
+        LOGGER.info("Limiting run to first %d discovered file(s)", limit)
         sources = sources[:limit]
     if not sources:
         raise ValueError(f"No audio files found in {input_dir}")
+    LOGGER.info("Discovered %d audio file(s)", len(sources))
 
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    LOGGER.info("Writing generated audio under %s", out_dir)
+    LOGGER.info("Writing manifest to %s", manifest_path)
     work_items = [
         WorkItem(
             index=index,
@@ -338,16 +435,17 @@ def main(
             chunk_frames=chunk_frames,
             absolute_paths=absolute_paths,
             overwrite=overwrite,
+            log_level=log_level,
         )
         for index, source in enumerate(sources, start=1)
     ]
 
     worker_count = resolve_workers(workers)
-    print(f"Processing {len(work_items)} files with {worker_count} worker(s)")
+    LOGGER.info("Processing %d files with %d worker(s)", len(work_items), worker_count)
     if worker_count == 1:
         results = [process_file(item) for item in work_items]
         for result in results:
-            print(result.message)
+            LOGGER.info(result.message)
     else:
         results = []
         with ProcessPoolExecutor(max_workers=worker_count) as executor:
@@ -355,14 +453,14 @@ def main(
             for future in as_completed(futures):
                 result = future.result()
                 results.append(result)
-                print(result.message)
+                LOGGER.info(result.message)
 
     rows = [result.row for result in sorted(results, key=lambda result: result.index)]
 
     with manifest_path.open("w", encoding="utf-8") as manifest_file:
         for row in rows:
             manifest_file.write(json.dumps(row, ensure_ascii=False) + "\n")
-    print(f"Wrote {len(rows)} rows to {manifest_path}")
+    LOGGER.info("Wrote %d rows to %s", len(rows), manifest_path)
 
 
 if __name__ == "__main__":

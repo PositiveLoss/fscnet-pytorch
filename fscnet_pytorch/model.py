@@ -19,6 +19,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from .audio import complex_to_ri, istft_complex, ri_to_complex, stft_complex
+from .kernels import fused_global_layer_norm_pyptx
 from .validation import validate_fscnet_config_data
 
 
@@ -60,6 +61,9 @@ class GlobalLayerNorm(nn.Module):
         self.bias = nn.Parameter(torch.zeros(1, channels, 1, 1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = fused_global_layer_norm_pyptx(x, self.weight, self.bias, self.eps)
+        if out is not None:
+            return out
         mean = x.mean(dim=(1, 2, 3), keepdim=True)
         var = x.var(dim=(1, 2, 3), keepdim=True, unbiased=False)
         return (x - mean) * torch.rsqrt(var + self.eps) * self.weight + self.bias
@@ -75,6 +79,9 @@ class SingleGroupNorm(nn.Module):
         self.bias = nn.Parameter(torch.zeros(channels))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = fused_global_layer_norm_pyptx(x, self.weight, self.bias, self.eps)
+        if out is not None:
+            return out
         mean = x.mean(dim=(1, 2, 3), keepdim=True)
         var = x.var(dim=(1, 2, 3), keepdim=True, unbiased=False)
         weight = self.weight.view(1, -1, 1, 1)

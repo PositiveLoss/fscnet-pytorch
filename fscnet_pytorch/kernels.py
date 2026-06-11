@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Sequence
+import os
+from typing import Any, Sequence
 
 import torch
 
@@ -203,3 +204,203 @@ def _progressive_target_kernel(
         ptx.ret()
 
     return progressive_target
+
+
+def fused_global_layer_norm_pyptx(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    eps: float,
+) -> torch.Tensor | None:
+    """Global layer norm over [C,F,T] for each batch item.
+
+    Uses pyptx for the forward pass and a PyTorch backward formula.
+    """
+
+    if os.environ.get("FSCNET_ENABLE_PYPTX_NORM") != "1":
+        return None
+    if not _can_use_global_layer_norm_kernel(x, weight, bias):
+        return None
+    try:
+        return _GlobalLayerNormFn.apply(x.contiguous(), weight.reshape(-1), bias.reshape(-1), eps)
+    except Exception:
+        return None
+
+
+def _can_use_global_layer_norm_kernel(
+    x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
+) -> bool:
+    return (
+        x.is_cuda
+        and weight.is_cuda
+        and bias.is_cuda
+        and x.dtype == torch.float32
+        and weight.dtype == torch.float32
+        and bias.dtype == torch.float32
+        and x.ndim == 4
+        and weight.numel() == x.shape[1]
+        and bias.numel() == x.shape[1]
+    )
+
+
+class _GlobalLayerNormFn(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx: Any, x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, eps: float
+    ) -> torch.Tensor:
+        bsz, channels, freq, frames = x.shape
+        kernel = _global_layer_norm_kernel(bsz, channels, freq, frames, float(eps))
+        out, mean, rstd = kernel(x, weight.contiguous(), bias.contiguous())
+        ctx.save_for_backward(x, weight, mean, rstd)
+        ctx.eps = eps
+        return out
+
+    @staticmethod
+    def backward(ctx: Any, *grad_outputs: Any) -> Any:
+        grad_out = grad_outputs[0]
+        x, weight, mean, rstd = ctx.saved_tensors
+        bsz, channels, freq, frames = x.shape
+        n = float(channels * freq * frames)
+
+        mean_v = mean.view(bsz, 1, 1, 1)
+        rstd_v = rstd.view(bsz, 1, 1, 1)
+        weight_v = weight.view(1, channels, 1, 1)
+        x_hat = (x - mean_v) * rstd_v
+
+        grad_weight = None
+        grad_bias = None
+        if ctx.needs_input_grad[1]:
+            grad_weight = (grad_out * x_hat).sum(dim=(0, 2, 3))
+        if ctx.needs_input_grad[2]:
+            grad_bias = grad_out.sum(dim=(0, 2, 3))
+
+        grad_x = None
+        if ctx.needs_input_grad[0]:
+            grad_normed = grad_out * weight_v
+            sum_grad = grad_normed.sum(dim=(1, 2, 3), keepdim=True)
+            sum_grad_xhat = (grad_normed * x_hat).sum(
+                dim=(1, 2, 3), keepdim=True
+            )
+            grad_x = (grad_normed - sum_grad / n - x_hat * sum_grad_xhat / n) * rstd_v
+
+        return grad_x, grad_weight, grad_bias, None
+
+
+@lru_cache(maxsize=32)
+def _global_layer_norm_kernel(
+    bsz: int, channels: int, freq: int, frames: int, eps: float
+):
+    from pyptx import Tile, kernel, ptx, reg, smem
+    from pyptx.types import f32, u32
+
+    block = 256
+    num_warps = block // 32
+    row_size = channels * freq * frames
+    channel_stride = freq * frames
+    arch = _arch()
+    version = (8, 7) if arch.startswith("sm_100") else None
+
+    @kernel(
+        in_specs=(
+            Tile(bsz, channels, freq, frames, f32),
+            Tile(channels, f32),
+            Tile(channels, f32),
+        ),
+        out_specs=(
+            Tile(bsz, channels, freq, frames, f32),
+            Tile(bsz, f32),
+            Tile(bsz, f32),
+        ),
+        grid=(bsz, 1, 1),
+        block=(block, 1, 1),
+        arch=arch,
+        version=version,
+    )
+    def global_layer_norm(x, weight, bias, out, mean_out, rstd_out):
+        partials = smem.alloc(f32, (num_warps, 2))
+        stats = smem.alloc(f32, (2, 1))
+        px, pw, pb, po, pm, pr = ptx.global_ptrs(
+            x, weight, bias, out, mean_out, rstd_out
+        )
+
+        tid = reg.scalar(u32)
+        ptx.inst.mov.u32(tid, ptx.special.tid.x())
+        lane = tid & 31
+        warp_id = tid >> 5
+        row = reg.scalar(u32)
+        ptx.inst.mov.u32(row, ptx.special.ctaid.x())
+        row_base = row * row_size
+
+        sum_x = reg.scalar(f32, init=0.0)
+        sum_x2 = reg.scalar(f32, init=0.0)
+        for idx_s in ptx.range_(tid, row_size, block):
+            idx = reg.scalar(u32)
+            ptx.inst.cvt.u32.s32(idx, idx_s)
+            val = reg.scalar(f32)
+            ptx.inst.ld.global_.f32(val, ptx.addr(px + (row_base + idx) * 4))
+            ptx.inst.add.f32(sum_x, sum_x, val)
+            ptx.inst.fma.rn.f32(sum_x2, val, val, sum_x2)
+
+        ptx.warp.reduce_sum(sum_x)
+        ptx.warp.reduce_sum(sum_x2)
+
+        with ptx.if_(lane == 0):
+            partials[warp_id, 0] = sum_x
+            partials[warp_id, 1] = sum_x2
+        ptx.bar.sync(0)
+
+        with ptx.if_(tid == 0):
+            block_sum = reg.scalar(f32, init=0.0)
+            block_sum_sq = reg.scalar(f32, init=0.0)
+            for i in range(num_warps):
+                ptx.inst.add.f32(block_sum, block_sum, partials[i, 0])
+                ptx.inst.add.f32(block_sum_sq, block_sum_sq, partials[i, 1])
+            stats[0, 0] = block_sum
+            stats[1, 0] = block_sum_sq
+        ptx.bar.sync(0)
+
+        ptx.inst.mov.f32(sum_x, stats[0, 0])
+        ptx.inst.mov.f32(sum_x2, stats[1, 0])
+
+        inv_n = reg.scalar(f32, init=1.0 / float(row_size))
+        eps_reg = reg.scalar(f32, init=eps)
+        mean = reg.scalar(f32)
+        ptx.inst.mul.f32(mean, sum_x, inv_n)
+        ex2 = reg.scalar(f32)
+        ptx.inst.mul.f32(ex2, sum_x2, inv_n)
+        mean_sq = reg.scalar(f32)
+        ptx.inst.mul.f32(mean_sq, mean, mean)
+        var = reg.scalar(f32)
+        ptx.inst.sub.f32(var, ex2, mean_sq)
+        ptx.inst.add.f32(var, var, eps_reg)
+        rstd = reg.scalar(f32)
+        ptx.inst.rsqrt.approx.f32(rstd, var)
+
+        with ptx.if_(tid == 0):
+            ptx.inst.st.global_.f32(ptx.addr(pm + row * 4), mean)
+            ptx.inst.st.global_.f32(ptx.addr(pr + row * 4), rstd)
+
+        for idx_s in ptx.range_(tid, row_size, block):
+            idx = reg.scalar(u32)
+            ptx.inst.cvt.u32.s32(idx, idx_s)
+            val = reg.scalar(f32)
+            ptx.inst.ld.global_.f32(val, ptx.addr(px + (row_base + idx) * 4))
+
+            chan = reg.scalar(u32)
+            ptx.inst.div.u32(chan, idx, channel_stride)
+            w = reg.scalar(f32)
+            b = reg.scalar(f32)
+            ptx.inst.ld.global_.f32(w, ptx.addr(pw + chan * 4))
+            ptx.inst.ld.global_.f32(b, ptx.addr(pb + chan * 4))
+
+            centered = reg.scalar(f32)
+            ptx.inst.sub.f32(centered, val, mean)
+            normed = reg.scalar(f32)
+            ptx.inst.mul.f32(normed, centered, rstd)
+            out_val = reg.scalar(f32)
+            ptx.inst.fma.rn.f32(out_val, normed, w, b)
+            ptx.inst.st.global_.f32(ptx.addr(po + (row_base + idx) * 4), out_val)
+
+        ptx.ret()
+
+    return global_layer_norm

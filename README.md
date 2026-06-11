@@ -224,6 +224,7 @@ uv run python inference.py \
   --checkpoint runs/fscnet_4k48k/last.safetensors \
   --input input_4k.wav \
   --output enhanced_48k.wav \
+  --precision bf16 \
   --normalize_input
 ```
 
@@ -259,6 +260,9 @@ uv run python export_to_onnx.py \
   --sample_length 48000 \
   --verify
 ```
+
+Add `--precision bf16` to export a bf16 ONNX graph. ONNX Runtime CPU
+verification does not support every bf16 op used by this model.
 
 The default exporter writes the enhanced waveform output. Use
 `--output_kind spectrogram` to export the final complex spectrum as

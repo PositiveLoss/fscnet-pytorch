@@ -25,19 +25,49 @@ from fscnet_pytorch.model import FSCNet, FSCNetConfig, SpectralTransform
 
 MAX_VERIFIED_OPSET = 25
 OutputKind = Literal["wav", "spectrogram"]
+PrecisionMode = Literal["fp32", "bf16"]
+
+
+def resolve_precision(
+    precision: PrecisionMode, device: torch.device
+) -> tuple[bool, torch.dtype | None]:
+    if precision == "fp32":
+        return False, None
+    if precision == "bf16":
+        if device.type == "cuda" and hasattr(torch.cuda, "is_bf16_supported"):
+            if not torch.cuda.is_bf16_supported():
+                raise RuntimeError(
+                    "CUDA bf16 export was requested, but this GPU does not support bf16."
+                )
+        return True, torch.bfloat16
+    raise ValueError(f"Unknown precision={precision!r}")
 
 
 class FSCNetONNXWrapper(torch.nn.Module):
-    def __init__(self, model: FSCNet, sample_length: int, output: str) -> None:
+    def __init__(
+        self,
+        model: FSCNet,
+        sample_length: int,
+        output: str,
+        autocast_enabled: bool = False,
+        autocast_dtype: torch.dtype | None = None,
+    ) -> None:
         super().__init__()
         if output not in {"wav", "spectrogram"}:
             raise ValueError(f"Unsupported output kind: {output}")
         self.model = model
         self.sample_length = sample_length
         self.output = output
+        self.autocast_enabled = autocast_enabled
+        self.autocast_dtype = autocast_dtype
 
     def forward(self, wav: torch.Tensor) -> torch.Tensor:
-        pred_ri = self.model(wav, return_all=False)
+        with torch.autocast(
+            device_type="cuda",
+            enabled=self.autocast_enabled and wav.device.type == "cuda",
+            dtype=self.autocast_dtype,
+        ):
+            pred_ri = self.model(wav, return_all=False)
         if self.output == "spectrogram":
             return pred_ri
         return self._istft(pred_ri)
@@ -131,10 +161,11 @@ def verify_onnx(
     active_providers = session.get_providers()
 
     with torch.no_grad():
-        expected = wrapper(sample).detach().cpu().numpy()
+        expected = wrapper(sample).detach().to(torch.float32).cpu().numpy()
     actual = cast(
         np.ndarray, session.run(None, {"wav": sample.detach().cpu().numpy()})[0]
     )
+    actual = actual.astype(np.float32, copy=False)
     max_abs = float(np.max(np.abs(actual - expected)))
     if not np.allclose(actual, expected, rtol=rtol, atol=atol):
         raise RuntimeError(
@@ -179,6 +210,11 @@ def main(
     device: str = option(
         "cuda" if torch.cuda.is_available() else "cpu", "--device", help="torch device"
     ),
+    precision: PrecisionMode = option(
+        "fp32",
+        "--precision",
+        help="export precision: fp32 or bf16",
+    ),
     verify: bool = option(False, "--verify", help="run ONNX checker and ORT"),
     provider: str = option(
         "CPUExecutionProvider",
@@ -193,8 +229,15 @@ def main(
     output.parent.mkdir(parents=True, exist_ok=True)
 
     torch_device = torch.device(device)
+    autocast_enabled, autocast_dtype = resolve_precision(precision, torch_device)
     model = load_model(str(checkpoint), torch_device)
-    wrapper = FSCNetONNXWrapper(model, sample_length, output_kind).to(torch_device)
+    wrapper = FSCNetONNXWrapper(
+        model,
+        sample_length,
+        output_kind,
+        autocast_enabled=autocast_enabled,
+        autocast_dtype=autocast_dtype,
+    ).to(torch_device)
     wrapper.eval()
     sample = torch.randn(batch_size, sample_length, device=torch_device)
     output_name = "enhanced_wav" if output_kind == "wav" else "enhanced_spectrogram"
@@ -222,6 +265,12 @@ def main(
             f"Requested opset {selected_opset}, but exporter wrote {actual_opset}"
         )
     if verify:
+        if precision == "bf16" and provider == "CPUExecutionProvider":
+            raise RuntimeError(
+                "ONNX Runtime CPUExecutionProvider does not support every bf16 op "
+                "used by this export. Use a bf16-capable provider or export fp32 "
+                "when --verify is required."
+            )
         verify_onnx(output, wrapper, sample, provider, atol, rtol)
 
 

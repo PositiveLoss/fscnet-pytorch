@@ -6,6 +6,7 @@ from fscnet_pytorch.model import (
     DepthwiseConv2dHead,
     FSCNet,
     FSCNetConfig,
+    FastFourierConv,
     IntraFrameRNN,
     TFFFCBlock,
     count_parameters,
@@ -45,6 +46,18 @@ class ModelArchitectureTest(unittest.TestCase):
 
         self.assertEqual(y.shape, x.shape)
         self.assertEqual(module.unfold_channels, 24)
+
+    def test_ffc_matches_article_local_plus_global_equation(self) -> None:
+        module = FastFourierConv(channels=8)
+        x = torch.randn(2, 8, 7, 5)
+
+        y = module(x)
+        expected = module.local(x) + module.global_branch(x)
+
+        self.assertFalse(hasattr(module, "l2l"))
+        self.assertFalse(hasattr(module, "l2g"))
+        self.assertFalse(hasattr(module, "g2l"))
+        torch.testing.assert_close(y, expected)
 
     def test_tf_ffc_block_uses_paper_intra_frame_rnn(self) -> None:
         cfg = FSCNetConfig(channels=8, rnn_hidden=5, attention_heads=2)

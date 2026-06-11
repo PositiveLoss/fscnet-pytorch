@@ -90,7 +90,7 @@ class SingleGroupNorm(nn.Module):
 
 
 class SpectralTransform(nn.Module):
-    """Global branch used inside Fast Fourier Convolution.
+    """Global branch used inside the article's Fast Fourier Convolution.
 
     It performs rFFT2 over the time-frequency feature map, applies lightweight
     convolution to concatenated real/imaginary Fourier coefficients, then uses
@@ -103,9 +103,6 @@ class SpectralTransform(nn.Module):
             raise ValueError("SpectralTransform requires channels > 0")
         self.export_manual_fft = False
         self.net = nn.Sequential(
-            nn.Conv2d(channels * 2, channels * 2, kernel_size=1),
-            SingleGroupNorm(channels * 2),
-            nn.SiLU(),
             nn.Conv2d(channels * 2, channels * 2, kernel_size=1),
         )
 
@@ -183,36 +180,22 @@ class SpectralTransform(nn.Module):
 
 
 class FastFourierConv(nn.Module):
-    """Fast Fourier Convolution block with local and global branches."""
+    """Article-style FFC: Conv2D_local(X) + IFFT2D(Conv2D_global(FFT2D(X)))."""
 
     def __init__(
         self, channels: int, ratio_g: float = 0.5, kernel_size: int = 3
     ) -> None:
         super().__init__()
-        if not (0.0 < ratio_g < 1.0):
+        if not 0.0 <= ratio_g <= 1.0:
             raise ValueError("ratio_g must be between 0 and 1")
         self.channels = channels
-        self.c_g = max(1, round(channels * ratio_g))
-        self.c_l = channels - self.c_g
-        if self.c_l <= 0:
-            self.c_l = 1
-            self.c_g = channels - 1
         pad = kernel_size // 2
 
-        self.l2l = nn.Conv2d(self.c_l, self.c_l, kernel_size, padding=pad)
-        self.l2g = nn.Conv2d(self.c_l, self.c_g, kernel_size, padding=pad)
-        self.g2l = nn.Conv2d(self.c_g, self.c_l, kernel_size, padding=pad)
-        self.g2g = SpectralTransform(self.c_g)
-        self.norm = GlobalLayerNorm(channels)
-        self.fuse = nn.Conv2d(channels, channels, kernel_size=1)
-        self.act = nn.SiLU()
+        self.local = nn.Conv2d(channels, channels, kernel_size, padding=pad)
+        self.global_branch = SpectralTransform(channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x_l, x_g = torch.split(x, [self.c_l, self.c_g], dim=1)
-        y_l = self.l2l(x_l) + self.g2l(x_g)
-        y_g = self.l2g(x_l) + self.g2g(x_g)
-        y = torch.cat((y_l, y_g), dim=1)
-        return self.fuse(self.act(self.norm(y)))
+        return self.local(x) + self.global_branch(x)
 
 
 class ResidualFFC(nn.Module):

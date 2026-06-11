@@ -314,6 +314,9 @@ uv run python inference.py \
   --normalize_input
 ```
 
+Use `--precision fp16` for fp16 CUDA autocast, `--precision bf16` on GPUs with
+bf16 support, or `--precision fp32` for full precision.
+
 To simulate a 4 kHz input from a full-band file before enhancement:
 
 ```bash

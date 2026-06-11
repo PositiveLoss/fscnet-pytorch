@@ -16,7 +16,7 @@ from fscnet_pytorch.checkpoint import load_training_checkpoint
 from fscnet_pytorch.cli import option, run
 from fscnet_pytorch.model import FSCNet, FSCNetConfig
 
-PrecisionMode = Literal["fp32", "bf16"]
+PrecisionMode = Literal["fp32", "fp16", "bf16"]
 
 
 def resolve_precision(
@@ -24,6 +24,8 @@ def resolve_precision(
 ) -> tuple[bool, torch.dtype | None]:
     if precision == "fp32" or device.type != "cuda":
         return False, None
+    if precision == "fp16":
+        return True, torch.float16
     if precision == "bf16":
         if (
             hasattr(torch.cuda, "is_bf16_supported")
@@ -88,7 +90,7 @@ def main(
     precision: PrecisionMode = option(
         "fp32",
         "--precision",
-        help="inference precision: fp32 or bf16",
+        help="inference precision: fp32, fp16, or bf16",
     ),
     simulate_input_sr: int = option(
         0,

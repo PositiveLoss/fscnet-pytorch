@@ -39,14 +39,24 @@ def parse_windows(text: str, num_blocks: int | None = None) -> tuple[int, ...]:
     if not vals:
         raise ValueError("At least one progressive window is required")
     if num_blocks is not None and len(vals) != num_blocks:
-        raise ValueError(f"Need one window per block: got {len(vals)} windows for {num_blocks} blocks")
+        raise ValueError(
+            f"Need one window per block: got {len(vals)} windows for {num_blocks} blocks"
+        )
     return vals
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Train FSC-Net for speech bandwidth extension")
-    p.add_argument("--train_manifest", required=True, help="jsonl/csv/txt manifest for training audio")
-    p.add_argument("--valid_manifest", default=None, help="optional validation manifest")
+    p = argparse.ArgumentParser(
+        description="Train FSC-Net for speech bandwidth extension"
+    )
+    p.add_argument(
+        "--train_manifest",
+        required=True,
+        help="jsonl/csv/txt manifest for training audio",
+    )
+    p.add_argument(
+        "--valid_manifest", default=None, help="optional validation manifest"
+    )
     p.add_argument("--out_dir", default="runs/fscnet", help="checkpoint/log directory")
 
     p.add_argument("--target_sr", type=int, default=48_000)
@@ -79,7 +89,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--complex_l1_weight", type=float, default=1.0)
     p.add_argument("--mrstft_fft_sizes", default="512,1024,2048")
 
-    p.add_argument("--adv_weight", type=float, default=0.0, help="set >0 to enable per-stage LSGAN")
+    p.add_argument(
+        "--adv_weight", type=float, default=0.0, help="set >0 to enable per-stage LSGAN"
+    )
     p.add_argument("--fm_weight", type=float, default=10.0)
     p.add_argument("--adv_start_step", type=int, default=0)
     p.add_argument("--disc_scales", type=int, default=3)
@@ -88,7 +100,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--save_every", type=int, default=1, help="save every N epochs")
     p.add_argument("--valid_every", type=int, default=1, help="validate every N epochs")
     p.add_argument("--seed", type=int, default=1234)
-    p.add_argument("--torch_num_threads", type=int, default=1, help="CPU intra-op threads; 1 avoids oversubscription on many machines")
+    p.add_argument(
+        "--torch_num_threads",
+        type=int,
+        default=1,
+        help="CPU intra-op threads; 1 avoids oversubscription on many machines",
+    )
     p.add_argument("--resume", default=None, help="checkpoint to resume")
     return p
 
@@ -99,7 +116,10 @@ def cosine_warmup_lambda(total_steps: int, warmup_steps: int, min_lr_ratio: floa
             return float(step + 1) / float(warmup_steps)
         progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
         progress = min(max(progress, 0.0), 1.0)
-        return min_lr_ratio + 0.5 * (1.0 - min_lr_ratio) * (1.0 + math.cos(math.pi * progress))
+        return min_lr_ratio + 0.5 * (1.0 - min_lr_ratio) * (
+            1.0 + math.cos(math.pi * progress)
+        )
+
     return fn
 
 
@@ -137,7 +157,13 @@ def save_checkpoint(
 
 
 @torch.no_grad()
-def validate(model: FSCNet, loss_fn: StageReconstructionLoss, loader: DataLoader, device: torch.device, amp: bool) -> dict[str, float]:
+def validate(
+    model: FSCNet,
+    loss_fn: StageReconstructionLoss,
+    loader: DataLoader,
+    device: torch.device,
+    amp: bool,
+) -> dict[str, float]:
     model.eval()
     total = 0.0
     count = 0
@@ -146,7 +172,15 @@ def validate(model: FSCNet, loss_fn: StageReconstructionLoss, loader: DataLoader
         hr = batch["hr"].to(device)
         with torch.autocast(device_type="cuda", enabled=amp and device.type == "cuda"):
             pred_stages, input_ri = model(lr, return_all=True)
-            target_ri = complex_to_ri(stft_complex(hr, model.cfg.n_fft, model.cfg.hop_length, model.cfg.win_length, center=model.cfg.center))
+            target_ri = complex_to_ri(
+                stft_complex(
+                    hr,
+                    model.cfg.n_fft,
+                    model.cfg.hop_length,
+                    model.cfg.win_length,
+                    center=model.cfg.center,
+                )
+            )
             loss, _, _, _ = loss_fn(pred_stages, input_ri, target_ri, hr.shape[-1])
         total += float(loss.detach().cpu()) * lr.shape[0]
         count += lr.shape[0]
@@ -209,10 +243,19 @@ def main() -> None:
             normalize=True,
             random_crop=False,
         )
-        valid_loader = DataLoader(valid_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+        valid_loader = DataLoader(
+            valid_ds,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+        )
 
-    weights = StageLossWeights(args.mrstft_weight, args.lsd_weight, args.complex_l1_weight)
-    recon_loss_fn = StageReconstructionLoss(cfg, windows, weights=weights, mrstft_fft_sizes=mrstft_fft_sizes).to(device)
+    weights = StageLossWeights(
+        args.mrstft_weight, args.lsd_weight, args.complex_l1_weight
+    )
+    recon_loss_fn = StageReconstructionLoss(
+        cfg, windows, weights=weights, mrstft_fft_sizes=mrstft_fft_sizes
+    ).to(device)
 
     discriminators = None
     optimizer_d = None
@@ -220,20 +263,33 @@ def main() -> None:
     if args.adv_weight > 0:
         discriminators = nn.ModuleList(
             [
-                MultiScaleDiscriminator(in_channels=2, num_scales=args.disc_scales, base_channels=args.disc_channels)
+                MultiScaleDiscriminator(
+                    in_channels=2,
+                    num_scales=args.disc_scales,
+                    base_channels=args.disc_channels,
+                )
                 for _ in windows
             ]
         ).to(device)
-        optimizer_d = torch.optim.AdamW(discriminators.parameters(), lr=args.lr_d, betas=(0.8, 0.99), weight_decay=1e-4)
+        optimizer_d = torch.optim.AdamW(
+            discriminators.parameters(),
+            lr=args.lr_d,
+            betas=(0.8, 0.99),
+            weight_decay=1e-4,
+        )
 
-    optimizer_g = torch.optim.AdamW(model.parameters(), lr=args.lr_g, betas=(0.8, 0.99), weight_decay=1e-4)
+    optimizer_g = torch.optim.AdamW(
+        model.parameters(), lr=args.lr_g, betas=(0.8, 0.99), weight_decay=1e-4
+    )
     total_steps = max(1, len(train_loader) * args.epochs)
     scheduler_g = torch.optim.lr_scheduler.LambdaLR(
-        optimizer_g, cosine_warmup_lambda(total_steps, args.warmup_steps, args.min_lr_ratio)
+        optimizer_g,
+        cosine_warmup_lambda(total_steps, args.warmup_steps, args.min_lr_ratio),
     )
     if optimizer_d is not None:
         scheduler_d = torch.optim.lr_scheduler.LambdaLR(
-            optimizer_d, cosine_warmup_lambda(total_steps, args.warmup_steps, args.min_lr_ratio)
+            optimizer_d,
+            cosine_warmup_lambda(total_steps, args.warmup_steps, args.min_lr_ratio),
         )
 
     start_epoch = 0
@@ -254,7 +310,9 @@ def main() -> None:
         global_step = int(ckpt.get("step", 0))
 
     (out_dir / "config.json").write_text(
-        json.dumps({"model": cfg.to_dict(), "windows": windows, "args": vars(args)}, indent=2),
+        json.dumps(
+            {"model": cfg.to_dict(), "windows": windows, "args": vars(args)}, indent=2
+        ),
         encoding="utf-8",
     )
 
@@ -267,10 +325,18 @@ def main() -> None:
             lr = batch["lr"].to(device, non_blocking=True)
             hr = batch["hr"].to(device, non_blocking=True)
 
-            with torch.autocast(device_type="cuda", enabled=args.amp and device.type == "cuda"):
+            with torch.autocast(
+                device_type="cuda", enabled=args.amp and device.type == "cuda"
+            ):
                 pred_stages, input_ri = model(lr, return_all=True)
-                target_ri = complex_to_ri(stft_complex(hr, cfg.n_fft, cfg.hop_length, cfg.win_length, center=cfg.center))
-                recon_loss, logs, pred_wavs, target_wavs = recon_loss_fn(pred_stages, input_ri, target_ri, hr.shape[-1])
+                target_ri = complex_to_ri(
+                    stft_complex(
+                        hr, cfg.n_fft, cfg.hop_length, cfg.win_length, center=cfg.center
+                    )
+                )
+                recon_loss, logs, pred_wavs, target_wavs = recon_loss_fn(
+                    pred_stages, input_ri, target_ri, hr.shape[-1]
+                )
 
             d_loss_val = 0.0
             use_adv = discriminators is not None and global_step >= args.adv_start_step
@@ -278,29 +344,43 @@ def main() -> None:
                 assert optimizer_d is not None
                 set_requires_grad(discriminators, True)
                 optimizer_d.zero_grad(set_to_none=True)
-                with torch.autocast(device_type="cuda", enabled=args.amp and device.type == "cuda"):
+                with torch.autocast(
+                    device_type="cuda", enabled=args.amp and device.type == "cuda"
+                ):
                     d_loss = lr.new_tensor(0.0)
-                    for disc, fake_wav, real_wav in zip(discriminators, pred_wavs, target_wavs):
-                        d_loss = d_loss + discriminator_lsgan_loss(disc, lr, real_wav, fake_wav.detach())
+                    for disc, fake_wav, real_wav in zip(
+                        discriminators, pred_wavs, target_wavs
+                    ):
+                        d_loss = d_loss + discriminator_lsgan_loss(
+                            disc, lr, real_wav, fake_wav.detach()
+                        )
                     d_loss = d_loss / len(pred_wavs)
                 scaler.scale(d_loss).backward()
                 scaler.unscale_(optimizer_d)
                 if args.clip_grad_norm > 0:
-                    nn.utils.clip_grad_norm_(discriminators.parameters(), args.clip_grad_norm)
+                    nn.utils.clip_grad_norm_(
+                        discriminators.parameters(), args.clip_grad_norm
+                    )
                 scaler.step(optimizer_d)
                 if scheduler_d is not None:
                     scheduler_d.step()
                 d_loss_val = float(d_loss.detach().cpu())
 
             optimizer_g.zero_grad(set_to_none=True)
-            with torch.autocast(device_type="cuda", enabled=args.amp and device.type == "cuda"):
+            with torch.autocast(
+                device_type="cuda", enabled=args.amp and device.type == "cuda"
+            ):
                 loss_g = recon_loss
                 adv_val = lr.new_tensor(0.0)
                 fm_val = lr.new_tensor(0.0)
                 if use_adv:
                     set_requires_grad(discriminators, False)
-                    for disc, fake_wav, real_wav in zip(discriminators, pred_wavs, target_wavs):
-                        adv, fm = generator_lsgan_fm_loss(disc, lr, real_wav, fake_wav, fm_weight=args.fm_weight)
+                    for disc, fake_wav, real_wav in zip(
+                        discriminators, pred_wavs, target_wavs
+                    ):
+                        adv, fm = generator_lsgan_fm_loss(
+                            disc, lr, real_wav, fake_wav, fm_weight=args.fm_weight
+                        )
                         adv_val = adv_val + adv
                         fm_val = fm_val + fm
                     adv_val = adv_val / len(pred_wavs)

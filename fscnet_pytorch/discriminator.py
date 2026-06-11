@@ -18,13 +18,23 @@ import torch.nn.functional as F
 class ScaleDiscriminator(nn.Module):
     def __init__(self, in_channels: int = 2, base_channels: int = 16) -> None:
         super().__init__()
-        channels = [base_channels, base_channels * 4, base_channels * 8, base_channels * 16, base_channels * 16]
+        channels = [
+            base_channels,
+            base_channels * 4,
+            base_channels * 8,
+            base_channels * 16,
+            base_channels * 16,
+        ]
         strides = [1, 4, 4, 4, 1]
         kernels = [15, 41, 41, 41, 5]
         layers = []
         prev = in_channels
         for ch, stride, kernel in zip(channels, strides, kernels):
-            layers.append(nn.Conv1d(prev, ch, kernel_size=kernel, stride=stride, padding=kernel // 2))
+            layers.append(
+                nn.Conv1d(
+                    prev, ch, kernel_size=kernel, stride=stride, padding=kernel // 2
+                )
+            )
             layers.append(nn.LeakyReLU(0.2, inplace=True))
             prev = ch
         layers.append(nn.Conv1d(prev, 1, kernel_size=3, padding=1))
@@ -42,12 +52,19 @@ class ScaleDiscriminator(nn.Module):
 
 
 class MultiScaleDiscriminator(nn.Module):
-    def __init__(self, in_channels: int = 2, num_scales: int = 3, base_channels: int = 16) -> None:
+    def __init__(
+        self, in_channels: int = 2, num_scales: int = 3, base_channels: int = 16
+    ) -> None:
         super().__init__()
         self.discriminators = nn.ModuleList(
-            [ScaleDiscriminator(in_channels=in_channels, base_channels=base_channels) for _ in range(num_scales)]
+            [
+                ScaleDiscriminator(in_channels=in_channels, base_channels=base_channels)
+                for _ in range(num_scales)
+            ]
         )
-        self.downsample = nn.AvgPool1d(kernel_size=4, stride=2, padding=1, count_include_pad=False)
+        self.downsample = nn.AvgPool1d(
+            kernel_size=4, stride=2, padding=1, count_include_pad=False
+        )
 
     def forward(self, x: torch.Tensor) -> List[Tuple[torch.Tensor, List[torch.Tensor]]]:
         outs = []
@@ -80,7 +97,7 @@ def discriminator_lsgan_loss(
     fake_out = disc(_conditional_pair(condition, fake.detach()))
     loss = real.new_tensor(0.0)
     for (real_score, _), (fake_score, _) in zip(real_out, fake_out):
-        loss = loss + torch.mean((real_score - 1.0) ** 2) + torch.mean(fake_score ** 2)
+        loss = loss + torch.mean((real_score - 1.0) ** 2) + torch.mean(fake_score**2)
     return loss / len(real_out)
 
 

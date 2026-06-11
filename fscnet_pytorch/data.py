@@ -34,7 +34,13 @@ def read_manifest(path: str | Path) -> List[Dict[str, str]]:
     items: List[Dict[str, str]] = []
 
     def normalize(row: Dict[str, str]) -> Dict[str, str]:
-        hr = row.get("hr_path") or row.get("hr") or row.get("path") or row.get("wav") or row.get("audio")
+        hr = (
+            row.get("hr_path")
+            or row.get("hr")
+            or row.get("path")
+            or row.get("wav")
+            or row.get("audio")
+        )
         if not hr:
             raise ValueError(f"Manifest row has no HR path field: {row}")
         out = {"hr_path": _resolve_path(base, hr)}
@@ -93,7 +99,9 @@ class BandwidthExtensionDataset(Dataset):
     def __len__(self) -> int:
         return len(self.items)
 
-    def _crop_or_pad(self, wav: torch.Tensor, start: Optional[int] = None) -> tuple[torch.Tensor, int]:
+    def _crop_or_pad(
+        self, wav: torch.Tensor, start: Optional[int] = None
+    ) -> tuple[torch.Tensor, int]:
         length = wav.shape[-1]
         seg = self.segment_samples
         if length >= seg:
@@ -110,7 +118,9 @@ class BandwidthExtensionDataset(Dataset):
 
         if "lr_path" in item:
             lr, _ = load_audio(item["lr_path"], target_sr=self.target_sr, mono=True)
-            lr, _ = self._crop_or_pad(lr, start=start if lr.shape[-1] >= self.segment_samples else None)
+            lr, _ = self._crop_or_pad(
+                lr, start=start if lr.shape[-1] >= self.segment_samples else None
+            )
         else:
             # Simulate the BWE input used in the paper: target -> narrowband -> target.
             lr_low = resample_audio(hr, self.target_sr, self.input_sr)

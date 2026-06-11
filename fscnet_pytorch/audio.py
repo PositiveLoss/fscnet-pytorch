@@ -17,6 +17,7 @@ import torch.nn.functional as F
 
 try:  # torchaudio is convenient but optional.
     import torchaudio  # type: ignore
+
     _TORCHAUDIO_OK = True
 except Exception:  # pragma: no cover - depends on local environment
     torchaudio = None  # type: ignore
@@ -73,12 +74,16 @@ def resample_audio(wav: torch.Tensor, orig_sr: int, new_sr: int) -> torch.Tensor
         )
     x = wav_2d.detach().cpu().numpy()
     gcd = math.gcd(orig_sr, new_sr)
-    y = resample_poly(x, new_sr // gcd, orig_sr // gcd, axis=-1).astype(np.float32, copy=False)
+    y = resample_poly(x, new_sr // gcd, orig_sr // gcd, axis=-1).astype(
+        np.float32, copy=False
+    )
     out = torch.from_numpy(y).to(dtype=wav.dtype)
     return out.squeeze(0) if was_1d else out
 
 
-def load_audio(path: str | Path, target_sr: Optional[int] = None, mono: bool = True) -> Tuple[torch.Tensor, int]:
+def load_audio(
+    path: str | Path, target_sr: Optional[int] = None, mono: bool = True
+) -> Tuple[torch.Tensor, int]:
     """Load audio as float32. Returns [T] if mono else [C,T], and sample rate."""
     path = Path(path)
     if not path.exists():
@@ -89,7 +94,9 @@ def load_audio(path: str | Path, target_sr: Optional[int] = None, mono: bool = T
         wav = wav.to(torch.float32)
     else:
         if sf is None:  # pragma: no cover
-            raise RuntimeError(f"soundfile is required for audio I/O: {_SF_IMPORT_ERROR!r}")
+            raise RuntimeError(
+                f"soundfile is required for audio I/O: {_SF_IMPORT_ERROR!r}"
+            )
         data, sr = sf.read(str(path), always_2d=True, dtype="float32")
         wav = torch.from_numpy(data.T.copy())
 
@@ -161,7 +168,9 @@ def istft_complex(
 ) -> torch.Tensor:
     """ISTFT for complex [B,F,frames] spectrograms. Returns [B,T]."""
     if spec.ndim != 3 or not torch.is_complex(spec):
-        raise ValueError(f"Expected complex [B,F,T], got shape={tuple(spec.shape)}, dtype={spec.dtype}")
+        raise ValueError(
+            f"Expected complex [B,F,T], got shape={tuple(spec.shape)}, dtype={spec.dtype}"
+        )
     win_length = win_length or n_fft
     window = torch.hann_window(win_length, device=spec.device, dtype=spec.real.dtype)
     return torch.istft(
@@ -189,6 +198,8 @@ def ri_to_complex(ri: torch.Tensor) -> torch.Tensor:
     return torch.complex(ri[:, 0], ri[:, 1])
 
 
-def peak_normalize_pair(lr: torch.Tensor, hr: torch.Tensor, eps: float = 1.0e-8) -> Tuple[torch.Tensor, torch.Tensor]:
+def peak_normalize_pair(
+    lr: torch.Tensor, hr: torch.Tensor, eps: float = 1.0e-8
+) -> Tuple[torch.Tensor, torch.Tensor]:
     peak = torch.maximum(lr.abs().amax(), hr.abs().amax()).clamp_min(eps)
     return lr / peak, hr / peak

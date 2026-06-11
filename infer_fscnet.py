@@ -19,19 +19,41 @@ from fscnet_pytorch.model import FSCNet, FSCNetConfig
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="FSC-Net inference")
-    p.add_argument("--checkpoint", required=True, help="checkpoint produced by train_fscnet.py")
+    p.add_argument(
+        "--checkpoint", required=True, help="checkpoint produced by train_fscnet.py"
+    )
     p.add_argument("--input", required=True, help="input narrowband audio")
     p.add_argument("--output", required=True, help="output enhanced audio path")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    p.add_argument("--simulate_input_sr", type=int, default=0, help="optional: downsample input to this SR before enhancement")
-    p.add_argument("--chunk_seconds", type=float, default=0.0, help="0 = process whole file")
-    p.add_argument("--overlap_seconds", type=float, default=0.25, help="chunk overlap for overlap-add")
-    p.add_argument("--normalize_input", action="store_true", help="peak normalize before inference and undo scale after")
-    p.add_argument("--torch_num_threads", type=int, default=1, help="CPU intra-op threads")
+    p.add_argument(
+        "--simulate_input_sr",
+        type=int,
+        default=0,
+        help="optional: downsample input to this SR before enhancement",
+    )
+    p.add_argument(
+        "--chunk_seconds", type=float, default=0.0, help="0 = process whole file"
+    )
+    p.add_argument(
+        "--overlap_seconds",
+        type=float,
+        default=0.25,
+        help="chunk overlap for overlap-add",
+    )
+    p.add_argument(
+        "--normalize_input",
+        action="store_true",
+        help="peak normalize before inference and undo scale after",
+    )
+    p.add_argument(
+        "--torch_num_threads", type=int, default=1, help="CPU intra-op threads"
+    )
     return p
 
 
-def enhance_chunked(model: FSCNet, wav: torch.Tensor, chunk_seconds: float, overlap_seconds: float) -> torch.Tensor:
+def enhance_chunked(
+    model: FSCNet, wav: torch.Tensor, chunk_seconds: float, overlap_seconds: float
+) -> torch.Tensor:
     cfg = model.cfg
     if chunk_seconds <= 0:
         return model.enhance(wav)
@@ -81,7 +103,11 @@ def main() -> None:
     wav, sr = load_audio(args.input, target_sr=None, mono=True)
     if args.simulate_input_sr > 0:
         wav = resample_audio(wav, sr, cfg.target_sr)
-        wav = resample_audio(resample_audio(wav, cfg.target_sr, args.simulate_input_sr), args.simulate_input_sr, cfg.target_sr)
+        wav = resample_audio(
+            resample_audio(wav, cfg.target_sr, args.simulate_input_sr),
+            args.simulate_input_sr,
+            cfg.target_sr,
+        )
     else:
         wav = resample_audio(wav, sr, cfg.target_sr)
 
@@ -92,7 +118,9 @@ def main() -> None:
 
     with torch.no_grad():
         wav_device = wav.to(device)
-        enhanced = enhance_chunked(model, wav_device, args.chunk_seconds, args.overlap_seconds).cpu()
+        enhanced = enhance_chunked(
+            model, wav_device, args.chunk_seconds, args.overlap_seconds
+        ).cpu()
 
     if args.normalize_input:
         enhanced = enhanced * scale

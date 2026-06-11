@@ -25,9 +25,9 @@ from .audio import complex_to_ri, istft_complex, ri_to_complex, stft_complex
 class FSCNetConfig:
     target_sr: int = 48_000
     input_sr: int = 4_000
-    n_fft: int = 1536          # 32 ms at 48 kHz
+    n_fft: int = 1536  # 32 ms at 48 kHz
     win_length: int = 1536
-    hop_length: int = 768      # 16 ms at 48 kHz
+    hop_length: int = 768  # 16 ms at 48 kHz
     subbands: int = 3
     channels: int = 48
     num_blocks: int = 5
@@ -94,7 +94,9 @@ class SpectralTransform(nn.Module):
 class FastFourierConv(nn.Module):
     """Fast Fourier Convolution block with local and global branches."""
 
-    def __init__(self, channels: int, ratio_g: float = 0.5, kernel_size: int = 3) -> None:
+    def __init__(
+        self, channels: int, ratio_g: float = 0.5, kernel_size: int = 3
+    ) -> None:
         super().__init__()
         if not (0.0 < ratio_g < 1.0):
             raise ValueError("ratio_g must be between 0 and 1")
@@ -178,7 +180,9 @@ class TimeSelfAttention(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         bsz, channels, freq, frames = x.shape
         seq = x.permute(0, 2, 3, 1).reshape(bsz * freq, frames, channels)
-        y, _ = self.attn(self.norm(seq), self.norm(seq), self.norm(seq), need_weights=False)
+        y, _ = self.attn(
+            self.norm(seq), self.norm(seq), self.norm(seq), need_weights=False
+        )
         y = self.dropout(y)
         y = y.reshape(bsz, freq, frames, channels).permute(0, 3, 1, 2)
         return x + y
@@ -212,7 +216,9 @@ def cws_split(ri: torch.Tensor, subbands: int) -> Tuple[torch.Tensor, int]:
         ri = F.pad(ri, (0, 0, 0, pad))
     freq_pad = ri.shape[2]
     y = ri.view(bsz, ch, freq_pad // subbands, subbands, frames)
-    y = y.permute(0, 1, 3, 2, 4).reshape(bsz, ch * subbands, freq_pad // subbands, frames)
+    y = y.permute(0, 1, 3, 2, 4).reshape(
+        bsz, ch * subbands, freq_pad // subbands, frames
+    )
     return y, pad
 
 

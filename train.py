@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import atexit
 import importlib
+from itertools import islice
 import json
 import math
 import os
@@ -35,7 +36,11 @@ from fscnet_pytorch.config import (
     model_preset_names,
     resolve_model_config,
 )
-from fscnet_pytorch.data import BandwidthExtensionDataset
+from fscnet_pytorch.data import (
+    BandwidthExtensionDataset,
+    StreamingBandwidthExtensionDataset,
+    count_manifest_rows,
+)
 from fscnet_pytorch.discriminator import (
     MultiScaleDiscriminator,
     discriminator_lsgan_loss,
@@ -607,6 +612,26 @@ def main(
     num_workers: int = option(
         4, "--num-workers", "--num_workers", help="DataLoader workers", min=0
     ),
+    stream_train_manifest: bool = option(
+        False,
+        "--stream-train-manifest/--no-stream-train-manifest",
+        "--stream_train_manifest/--no_stream_train_manifest",
+        help="stream the training manifest instead of loading all rows into memory",
+    ),
+    train_shuffle_buffer: int = option(
+        8192,
+        "--train-shuffle-buffer",
+        "--train_shuffle_buffer",
+        help="bounded shuffle buffer for --stream_train_manifest",
+        min=1,
+    ),
+    steps_per_epoch: int | None = option(
+        None,
+        "--steps-per-epoch",
+        "--steps_per_epoch",
+        help="optimizer steps per epoch; useful with streaming train manifests",
+        min=1,
+    ),
     lr_g: float = option(2e-4, "--lr-g", "--lr_g", help="generator LR", min=0.0),
     lr_d: float = option(1e-4, "--lr-d", "--lr_d", help="discriminator LR", min=0.0),
     warmup_steps: int = option(
@@ -775,18 +800,37 @@ def main(
     print(f"Model preset: {args.model_size}; windows={windows}; config={cfg.to_dict()}")
     print(f"Generator parameters: {parameter_count / 1e6:.3f} M")
 
-    train_ds = BandwidthExtensionDataset(
-        args.train_manifest,
-        target_sr=cfg.target_sr,
-        input_sr=cfg.input_sr,
-        segment_seconds=args.segment_seconds,
-        normalize=True,
-        random_crop=True,
-    )
+    if args.stream_train_manifest:
+        train_row_count = (
+            None
+            if args.steps_per_epoch is not None
+            else count_manifest_rows(args.train_manifest)
+        )
+        if train_row_count == 0:
+            raise ValueError(f"No audio items found in {args.train_manifest}")
+        train_ds = StreamingBandwidthExtensionDataset(
+            args.train_manifest,
+            target_sr=cfg.target_sr,
+            input_sr=cfg.input_sr,
+            segment_seconds=args.segment_seconds,
+            normalize=True,
+            random_crop=True,
+            shuffle_buffer_size=args.train_shuffle_buffer,
+            row_count=train_row_count,
+        )
+    else:
+        train_ds = BandwidthExtensionDataset(
+            args.train_manifest,
+            target_sr=cfg.target_sr,
+            input_sr=cfg.input_sr,
+            segment_seconds=args.segment_seconds,
+            normalize=True,
+            random_crop=True,
+        )
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=not args.stream_train_manifest,
         drop_last=True,
         num_workers=args.num_workers,
         pin_memory=(device.type == "cuda"),
@@ -839,7 +883,8 @@ def main(
     optimizer_g = torch.optim.AdamW(
         model.parameters(), lr=args.lr_g, betas=(0.8, 0.99), weight_decay=1e-4
     )
-    total_steps = max(1, len(train_loader) * args.epochs)
+    train_steps_per_epoch = args.steps_per_epoch or len(train_loader)
+    total_steps = max(1, train_steps_per_epoch * args.epochs)
     scheduler_g = torch.optim.lr_scheduler.LambdaLR(
         optimizer_g,
         cosine_warmup_lambda(total_steps, args.warmup_steps, args.min_lr_ratio),
@@ -897,8 +942,12 @@ def main(
     printed_kernel_runtime = False
 
     for epoch in range(start_epoch, args.epochs):
-        pbar = tqdm(train_loader, desc=f"epoch {epoch + 1}/{args.epochs}")
-        for batch in pbar:
+        pbar = tqdm(
+            train_loader,
+            desc=f"epoch {epoch + 1}/{args.epochs}",
+            total=train_steps_per_epoch,
+        )
+        for batch in islice(pbar, train_steps_per_epoch):
             lr = batch["lr"].to(device, non_blocking=True)
             hr = batch["hr"].to(device, non_blocking=True)
 

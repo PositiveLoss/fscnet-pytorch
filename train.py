@@ -311,13 +311,11 @@ def cosine_warmup_lambda(total_steps: int, warmup_steps: int, min_lr_ratio: floa
 
 
 def resolve_precision(
-    precision: PrecisionMode, amp: bool, device: torch.device
+    precision: PrecisionMode, device: torch.device
 ) -> tuple[bool, torch.dtype | None, bool, str]:
     """Return autocast/scaler settings for the requested training precision."""
     if device.type != "cuda":
         return False, None, False, "fp32"
-    if amp and precision == "fp32":
-        precision = "fp16"
     if precision == "fp32":
         return False, None, False, "fp32"
     if precision == "fp16":
@@ -620,11 +618,10 @@ def main(
     clip_grad_norm: float = option(
         5.0, "--clip-grad-norm", "--clip_grad_norm", help="gradient clipping", min=0.0
     ),
-    amp: bool = option(False, "--amp", help="mixed precision on CUDA"),
     precision: PrecisionMode = option(
         "fp32",
         "--precision",
-        help="training precision: fp32, fp16, or bf16; --amp maps fp32 to fp16",
+        help="training precision: fp32, fp16, or bf16",
     ),
     trackio: bool = option(False, "--trackio", help="enable Trackio logging"),
     trackio_project: str = option(
@@ -765,13 +762,11 @@ def main(
     if args.batch_size is None:
         args.batch_size = get_model_preset(args.model_size).suggested_batch_size
     autocast_enabled, autocast_dtype, scaler_enabled, precision_name = (
-        resolve_precision(args.precision, args.amp, device)
+        resolve_precision(args.precision, device)
     )
     args.precision = precision_name
     reset_activated_kernel_names()
     print_kernel_configuration(args, device, precision_name)
-    if args.amp and precision_name != "fp16":
-        print(f"--amp ignored because --precision {precision_name} was requested")
     parsed_mrstft_fft_sizes = tuple(
         int(x) for x in args.mrstft_fft_sizes.split(",") if x
     )

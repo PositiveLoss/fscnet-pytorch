@@ -113,11 +113,11 @@ uv run python train.py \
   --input_sr 4000 \
   --target_sr 48000 \
   --epochs 100 \
-  --amp
+  --precision fp16
 ```
 
 Use `--precision bf16` for bf16 CUDA autocast, or `--precision fp16` for
-explicit fp16 autocast. The legacy `--amp` flag remains an alias for fp16.
+explicit fp16 autocast.
 Optional pyptx kernels support fp32, fp16, and bf16 training. Progressive target
 generation activates automatically on CUDA. Set `FSCNET_ENABLE_PYPTX_NORM=1`
 to enable the global layer norm kernel, and set `FSCNET_ENABLE_PYPTX_ROPE_QK=1`
@@ -148,7 +148,7 @@ uv run python train.py \
   --input_sr 16000 \
   --target_sr 48000 \
   --epochs 100 \
-  --amp
+  --precision fp16
 ```
 
 Train different model sizes:
@@ -160,7 +160,7 @@ uv run python train.py \
   --out_dir runs/fscnet_tiny \
   --model_size tiny \
   --epochs 50 \
-  --amp
+  --precision fp16
 
 uv run python train.py \
   --train_manifest train.txt \
@@ -168,7 +168,7 @@ uv run python train.py \
   --out_dir runs/fscnet_medium \
   --model_size medium \
   --epochs 100 \
-  --amp
+  --precision fp16
 
 uv run python train.py \
   --train_manifest train.txt \
@@ -177,7 +177,7 @@ uv run python train.py \
   --model_size large \
   --epochs 150 \
   --segment_seconds 1.5 \
-  --amp
+  --precision fp16
 ```
 
 Architecture flags override the preset, so this is valid:
@@ -192,7 +192,7 @@ uv run python train.py \
   --num_blocks 5 \
   --rnn_hidden 64 \
   --progressive_windows 257,65,17,5,1 \
-  --amp
+  --precision fp16
 ```
 
 Enable adversarial training after the reconstruction loss starts converging:
@@ -235,7 +235,7 @@ uv run python train.py \
   --trackio \
   --trackio_project fscnet \
   --trackio_name compact_4k48 \
-  --amp
+  --precision fp16
 ```
 
 Trackio logs locally by default:

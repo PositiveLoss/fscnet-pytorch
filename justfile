@@ -116,7 +116,7 @@ train train_manifest valid_manifest="" out_dir="runs/fscnet" model_size="compact
       $valid_arg \
       --out_dir {{out_dir}} \
       --model_size {{model_size}} \
-      --amp
+      --precision fp16
 
 # Train with Trackio enabled. Example: just train-trackio train.txt valid.txt runs/fscnet medium run_001
 train-trackio train_manifest valid_manifest="" out_dir="runs/fscnet" model_size="compact" run_name="":
@@ -131,7 +131,7 @@ train-trackio train_manifest valid_manifest="" out_dir="runs/fscnet" model_size=
       --model_size {{model_size}} \
       --trackio \
       $name_arg \
-      --amp
+      --precision fp16
 
 # Open the local Trackio UI for a project.
 trackio-show project="fscnet":
@@ -148,7 +148,7 @@ train-4k48 train_manifest valid_manifest="" out_dir="runs/fscnet_4k48k" model_si
       --model_size {{model_size}} \
       --input_sr 4000 \
       --target_sr 48000 \
-      --amp
+      --precision fp16
 
 # Train 16 kHz to 48 kHz.
 train-16k48 train_manifest valid_manifest="" out_dir="runs/fscnet_16k48k" model_size="compact":
@@ -161,7 +161,7 @@ train-16k48 train_manifest valid_manifest="" out_dir="runs/fscnet_16k48k" model_
       --model_size {{model_size}} \
       --input_sr 16000 \
       --target_sr 48000 \
-      --amp
+      --precision fp16
 
 # Run inference. Example: just infer runs/fscnet/last.safetensors input.wav output.wav
 infer checkpoint input output:

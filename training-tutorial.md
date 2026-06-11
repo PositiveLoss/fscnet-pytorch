@@ -232,7 +232,7 @@ uv run python train.py \
   --no-eval-metrics
 ```
 
-If bf16 is not supported for your runtime, use `--precision fp16` or `--amp`
+If bf16 is not supported for your runtime, use `--precision fp16`
 instead.
 
 ## 6. Train on an L4

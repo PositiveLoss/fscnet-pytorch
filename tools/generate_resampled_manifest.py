@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 from fscnet_pytorch.cli import option, run
 
 
-DEFAULT_EXTENSIONS = (".wav", ".flac", ".ogg", ".aiff", ".aif", ".aifc")
+DEFAULT_EXTENSIONS = (".wav", ".flac", ".ogg", ".aiff", ".aif", ".aifc", ".opus")
 Quality = Literal["fast", "balanced", "best"]
 LOGGER = logging.getLogger("generate_resampled_manifest")
 

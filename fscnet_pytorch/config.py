@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .model import FSCNetConfig
+from .validation import validate_progressive_windows
 
 
 @dataclass(frozen=True)
@@ -100,9 +101,7 @@ def get_model_preset(name: str) -> FSCNetModelPreset:
 
 def parse_progressive_windows(text: str) -> tuple[int, ...]:
     vals = tuple(int(x.strip()) for x in text.split(",") if x.strip())
-    if not vals:
-        raise ValueError("At least one progressive window is required")
-    return vals
+    return validate_progressive_windows(vals)
 
 
 def resolve_model_config(
@@ -122,7 +121,7 @@ def resolve_model_config(
     elif isinstance(progressive_windows, str):
         windows = parse_progressive_windows(progressive_windows)
     else:
-        windows = progressive_windows
+        windows = validate_progressive_windows(progressive_windows)
 
     if len(windows) != cfg.num_blocks:
         raise ValueError(

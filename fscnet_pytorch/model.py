@@ -19,6 +19,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from .audio import complex_to_ri, istft_complex, ri_to_complex, stft_complex
+from .validation import validate_fscnet_config_data
 
 
 @dataclass
@@ -45,7 +46,7 @@ class FSCNetConfig:
 
     @classmethod
     def from_dict(cls, data: Dict) -> "FSCNetConfig":
-        valid = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        valid = validate_fscnet_config_data(data, cls.__dataclass_fields__)
         return cls(**valid)
 
 

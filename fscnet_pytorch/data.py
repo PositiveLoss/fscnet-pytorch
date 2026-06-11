@@ -12,11 +12,7 @@ import torch
 from torch.utils.data import Dataset
 
 from .audio import load_audio, match_length, peak_normalize_pair, resample_audio
-
-
-def _resolve_path(base: Path, value: str) -> str:
-    p = Path(value).expanduser()
-    return str(p if p.is_absolute() else (base / p).resolve())
+from .validation import normalize_manifest_row
 
 
 def read_manifest(path: str | Path) -> List[Dict[str, str]]:
@@ -33,40 +29,26 @@ def read_manifest(path: str | Path) -> List[Dict[str, str]]:
     suffix = path.suffix.lower()
     items: List[Dict[str, str]] = []
 
-    def normalize(row: Dict[str, str]) -> Dict[str, str]:
-        hr = (
-            row.get("hr_path")
-            or row.get("hr")
-            or row.get("path")
-            or row.get("wav")
-            or row.get("audio")
-        )
-        if not hr:
-            raise ValueError(f"Manifest row has no HR path field: {row}")
-        out = {"hr_path": _resolve_path(base, hr)}
-        lr = row.get("lr_path") or row.get("lr") or row.get("input")
-        if lr:
-            out["lr_path"] = _resolve_path(base, lr)
-        return out
-
     if suffix == ".jsonl":
         with path.open("r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:
-                    items.append(normalize(json.loads(line)))
+                    items.append(normalize_manifest_row(json.loads(line), base))
     elif suffix in {".csv", ".tsv"}:
         dialect = "excel-tab" if suffix == ".tsv" else "excel"
         with path.open("r", encoding="utf-8", newline="") as f:
             reader = csv.DictReader(f, dialect=dialect)
             for row in reader:
-                items.append(normalize({k: v for k, v in row.items() if v}))
+                items.append(
+                    normalize_manifest_row({k: v for k, v in row.items() if v}, base)
+                )
     else:
         with path.open("r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:
-                    items.append({"hr_path": _resolve_path(base, line)})
+                    items.append(normalize_manifest_row({"path": line}, base))
 
     if not items:
         raise ValueError(f"No audio items found in {path}")

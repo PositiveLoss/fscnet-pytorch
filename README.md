@@ -1,5 +1,7 @@
 # Full-Spectrum Context Network (FSC-Net) PyTorch implementation
 
+[![Python checks](https://github.com/PositiveLoss/fscnet-pytorch/actions/workflows/python-checks.yml/badge.svg)](https://github.com/PositiveLoss/fscnet-pytorch/actions/workflows/python-checks.yml)
+
 This is a runnable implementation of the paper [**“FSC-Net: Integrating Fast Fourier Convolutions and Progressive Learning for Speech Bandwidth Extension.”**](https://arxiv.org/abs/2606.06962)
 
 The paper says the official source code will be released after acceptance, so this repository is a faithful implementation from the article and demo, not the authors' original code.

@@ -7,6 +7,7 @@ from fscnet_pytorch.model import (
     FSCNet,
     FSCNetConfig,
     FastFourierConv,
+    GlobalLayerNorm,
     IntraFrameRNN,
     TFFFCBlock,
     count_parameters,
@@ -37,6 +38,31 @@ class ModelArchitectureTest(unittest.TestCase):
         self.assertEqual(pad, 2)
         self.assertEqual(split.shape, (2, 6, 4, 4))
         torch.testing.assert_close(merged, x)
+
+    def test_cws_split_and_merge_validate_layout(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Expected"):
+            cws_split(torch.randn(2, 10, 4), subbands=3)
+
+        with self.assertRaisesRegex(ValueError, "not divisible"):
+            cws_merge(torch.randn(2, 5, 4, 4), subbands=3, original_freq=10)
+
+    def test_global_layer_norm_matches_manual_normalization(self) -> None:
+        module = GlobalLayerNorm(channels=2)
+        x = torch.randn(3, 2, 4, 5, requires_grad=True)
+        module.weight.data.copy_(torch.tensor([[[[1.5]], [[0.5]]]]))
+        module.bias.data.copy_(torch.tensor([[[[-0.25]], [[0.75]]]]))
+
+        y = module(x)
+        mean = x.mean(dim=(1, 2, 3), keepdim=True)
+        var = x.var(dim=(1, 2, 3), keepdim=True, unbiased=False)
+        expected = (x - mean) * torch.rsqrt(var + module.eps)
+        expected = expected * module.weight + module.bias
+
+        torch.testing.assert_close(y, expected)
+        y.square().mean().backward()
+        self.assertIsNotNone(x.grad)
+        self.assertIsNotNone(module.weight.grad)
+        self.assertIsNotNone(module.bias.grad)
 
     def test_intra_frame_rnn_preserves_shape(self) -> None:
         module = IntraFrameRNN(channels=8, hidden=5, dropout=0.0)
@@ -106,13 +132,34 @@ class ModelArchitectureTest(unittest.TestCase):
         self.assertTrue(all(output.shape == input_ri.shape for output in outputs))
         self.assertEqual(model(wav).shape, input_ri.shape)
 
-    def test_progressive_final_window_recovers_hr_target(self) -> None:
-        input_ri = torch.randn(1, 2, 9, 3)
-        target_ri = torch.randn(1, 2, 9, 3)
+    def test_enhance_preserves_single_waveform_rank_and_length(self) -> None:
+        cfg = FSCNetConfig(
+            n_fft=64,
+            win_length=64,
+            hop_length=32,
+            channels=8,
+            num_blocks=1,
+            rnn_hidden=5,
+            attention_heads=2,
+        )
+        model = FSCNet(cfg)
+        wav = torch.randn(256)
 
-        targets = make_progressive_targets(input_ri, target_ri, windows=(257, 65, 1))
+        enhanced = model.enhance(wav)
 
-        self.assertEqual(len(targets), 3)
+        self.assertEqual(enhanced.shape, wav.shape)
+
+    def test_progressive_targets_match_frequency_smoothed_residuals(self) -> None:
+        input_ri = torch.tensor([[[[1.0], [2.0], [3.0]], [[0.0], [0.0], [0.0]]]])
+        target_ri = torch.tensor([[[[3.0], [4.0], [9.0]], [[0.0], [0.0], [0.0]]]])
+
+        targets = make_progressive_targets(input_ri, target_ri, windows=(3, 1))
+
+        self.assertEqual(len(targets), 2)
+        expected_smoothed = torch.tensor(
+            [[[[7.0 / 3.0], [16.0 / 3.0], [17.0 / 3.0]], [[0.0], [0.0], [0.0]]]]
+        )
+        torch.testing.assert_close(targets[0], expected_smoothed)
         torch.testing.assert_close(targets[-1], target_ri)
 
 

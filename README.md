@@ -17,7 +17,7 @@ The paper says the official source code will be released after acceptance, so th
   - time self-attention.
 - Frequency-progressive targets using default windows: `257,65,17,5,1`.
 - Multi-resolution STFT loss, LSD loss, complex L1 loss.
-- Optional per-stage conditional multi-scale LSGAN discriminator and feature matching.
+- Per-stage multi-scale LSGAN discriminator over waveform/spectrogram pairs.
 - Training and inference scripts.
 
 ## Manifest formats

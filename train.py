@@ -905,7 +905,8 @@ def main(
         discriminators = nn.ModuleList(
             [
                 MultiScaleDiscriminator(
-                    in_channels=2,
+                    waveform_channels=1,
+                    spec_channels=2,
                     num_scales=args.disc_scales,
                     base_channels=args.disc_channels,
                 )
@@ -1016,7 +1017,7 @@ def main(
                         hr, cfg.n_fft, cfg.hop_length, cfg.win_length, center=cfg.center
                     )
                 )
-                recon_loss, logs, pred_wavs, target_wavs = recon_loss_fn(
+                recon_loss, logs, pred_wavs, _target_wavs = recon_loss_fn(
                     pred_stages, input_ri, target_ri, hr.shape[-1]
                 )
 
@@ -1033,14 +1034,15 @@ def main(
                     dtype=autocast_dtype,
                 ):
                     d_loss = lr.new_tensor(0.0)
-                    for disc, fake_wav, real_wav in zip(
-                        discriminators_active, pred_wavs, target_wavs
+                    for disc, fake_wav, fake_ri in zip(
+                        discriminators_active, pred_wavs, pred_stages
                     ):
                         d_loss = d_loss + discriminator_lsgan_loss(
                             cast(MultiScaleDiscriminator, disc),
-                            lr,
-                            real_wav,
-                            fake_wav.detach(),
+                            hr,
+                            target_ri,
+                            fake_wav,
+                            fake_ri,
                         )
                     d_loss = d_loss / len(pred_wavs)
                 cast(torch.Tensor, scaler.scale(d_loss)).backward()
@@ -1067,14 +1069,15 @@ def main(
                 if use_adv:
                     discriminators_active = cast(nn.ModuleList, discriminators)
                     set_requires_grad(discriminators_active, False)
-                    for disc, fake_wav, real_wav in zip(
-                        discriminators_active, pred_wavs, target_wavs
+                    for disc, fake_wav, fake_ri in zip(
+                        discriminators_active, pred_wavs, pred_stages
                     ):
                         adv, fm = generator_lsgan_fm_loss(
                             cast(MultiScaleDiscriminator, disc),
-                            lr,
-                            real_wav,
+                            hr,
+                            target_ri,
                             fake_wav,
+                            fake_ri,
                             fm_weight=args.fm_weight,
                         )
                         adv_val = adv_val + adv

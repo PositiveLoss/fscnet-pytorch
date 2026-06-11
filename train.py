@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 import time
 from types import ModuleType, SimpleNamespace
-from typing import Any, Iterable, Literal, Sequence, cast
+from typing import Any, Iterable, Iterator, Literal, Sequence, cast
 
 import torch
 from torch import nn
@@ -193,6 +193,20 @@ def gradients_are_finite(parameters: Iterable[torch.nn.Parameter]) -> bool:
         if grad is not None and not torch.isfinite(grad).all():
             return False
     return True
+
+
+def cycle_loader(loader: Iterable[Any]) -> Iterator[Any]:
+    while True:
+        yielded = False
+        for batch in loader:
+            yielded = True
+            yield batch
+        if not yielded:
+            raise ValueError(
+                "Training loader produced no batches. Check that the training "
+                "manifest is non-empty and contains enough samples for batch_size "
+                "with drop_last=True."
+            )
 
 
 def print_kernel_configuration(
@@ -925,13 +939,29 @@ def main(
     optimizer_g = torch.optim.AdamW(
         model.parameters(), lr=args.lr_g, betas=(0.8, 0.99), weight_decay=1e-4
     )
-    train_steps_per_epoch = args.steps_per_epoch or len(train_loader)
+    if args.steps_per_epoch is None:
+        train_steps_per_epoch = len(train_loader)
+    else:
+        if not args.stream_train_manifest:
+            natural_train_steps = len(train_loader)
+            if args.steps_per_epoch > natural_train_steps:
+                raise ValueError(
+                    f"--steps_per_epoch={args.steps_per_epoch} exceeds the finite "
+                    f"training loader length ({natural_train_steps}). Use "
+                    "--stream_train_manifest to cycle the manifest, lower "
+                    "--steps_per_epoch, or omit it."
+                )
+        train_steps_per_epoch = args.steps_per_epoch
+    cycle_train_loader = (
+        args.stream_train_manifest and args.steps_per_epoch is not None
+    )
     total_steps = max(1, train_steps_per_epoch * args.epochs)
     print(
         "Training schedule: "
         f"steps_per_epoch={train_steps_per_epoch}, "
         f"total_steps={total_steps}, "
-        f"stream_train_manifest={args.stream_train_manifest}",
+        f"stream_train_manifest={args.stream_train_manifest}, "
+        f"cycle_train_loader={cycle_train_loader}",
         flush=True,
     )
     scheduler_g = torch.optim.lr_scheduler.LambdaLR(
@@ -995,8 +1025,11 @@ def main(
         data_started = time.perf_counter()
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
+        train_epoch_loader = (
+            cycle_loader(train_loader) if cycle_train_loader else train_loader
+        )
         pbar = tqdm(
-            train_loader,
+            train_epoch_loader,
             desc=f"epoch {epoch + 1}/{args.epochs}",
             total=train_steps_per_epoch,
         )

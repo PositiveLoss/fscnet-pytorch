@@ -1,6 +1,6 @@
-# FSC-Net PyTorch implementation for arXiv:2606.06962v1
+# FSC-Net PyTorch implementation
 
-This is a runnable implementation of the paper **“FSC-Net: Integrating Fast Fourier Convolutions and Progressive Learning for Speech Bandwidth Extension.”**
+This is a runnable implementation of the paper [**“FSC-Net: Integrating Fast Fourier Convolutions and Progressive Learning for Speech Bandwidth Extension.”**](https://arxiv.org/abs/2606.06962)
 
 The paper says the official source code will be released after acceptance, so this repository is a faithful implementation from the article and demo, not the authors' original code.
 

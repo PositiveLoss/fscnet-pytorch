@@ -15,7 +15,7 @@ import math
 import os
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any, Literal, Sequence, cast
+from typing import Any, Iterable, Literal, Sequence, cast
 
 import torch
 from torch import nn
@@ -156,6 +156,14 @@ def scalar_float(value: Any) -> float:
     if isinstance(value, torch.Tensor):
         return float(value.detach().cpu())
     return float(value)
+
+
+def gradients_are_finite(parameters: Iterable[torch.nn.Parameter]) -> bool:
+    for parameter in parameters:
+        grad = parameter.grad
+        if grad is not None and not torch.isfinite(grad).all():
+            return False
+    return True
 
 
 def print_kernel_configuration(
@@ -824,8 +832,9 @@ def main(
                     nn.utils.clip_grad_norm_(
                         discriminators_active.parameters(), args.clip_grad_norm
                     )
+                d_step_ok = gradients_are_finite(discriminators_active.parameters())
                 scaler.step(optimizer_d)
-                if scheduler_d is not None:
+                if scheduler_d is not None and d_step_ok:
                     scheduler_d.step()
                 d_loss_val = float(d_loss.detach().cpu())
 
@@ -861,9 +870,11 @@ def main(
             scaler.unscale_(optimizer_g)
             if args.clip_grad_norm > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
+            g_step_ok = gradients_are_finite(model.parameters())
             scaler.step(optimizer_g)
             scaler.update()
-            scheduler_g.step()
+            if g_step_ok:
+                scheduler_g.step()
             if use_adv:
                 discriminators_active = cast(nn.ModuleList, discriminators)
                 set_requires_grad(discriminators_active, True)

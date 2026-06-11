@@ -17,14 +17,11 @@ import json
 import logging
 import os
 from pathlib import Path
-import sys
 import time
 from typing import TYPE_CHECKING, Iterable, Literal, Sequence
 
 if TYPE_CHECKING:
     import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fscnet_pytorch.cli import option, run
 
@@ -128,11 +125,11 @@ def load_audio(path: Path, channels: int) -> tuple[np.ndarray, int]:
     LOGGER.info(
         "Loaded %s: sr=%d frames=%d channels=%d",
         path,
-        int(sample_rate),
+        sample_rate,
         normalized.shape[0],
         normalized.shape[1],
     )
-    return normalized, int(sample_rate)
+    return normalized, sample_rate
 
 
 def load_audio_with_torchaudio(path: Path) -> tuple[np.ndarray, int]:
@@ -142,7 +139,7 @@ def load_audio_with_torchaudio(path: Path) -> tuple[np.ndarray, int]:
     waveform, sample_rate = torchaudio.load(str(path))
     LOGGER.debug("Decoded %s with torchaudio", path)
     data = waveform.transpose(0, 1).contiguous().numpy()
-    return np.ascontiguousarray(data, dtype=np.float32), int(sample_rate)
+    return np.ascontiguousarray(data, dtype=np.float32), sample_rate
 
 
 def normalize_channels(audio: np.ndarray, channels: int) -> np.ndarray:
@@ -190,9 +187,9 @@ def resample_audio(
 
     f32_resampler = getattr(fast_audio_resampler, "F32Resampler")
     resampler = f32_resampler(
-        int(input_rate),
-        int(output_rate),
-        int(channels),
+        input_rate,
+        output_rate,
+        channels,
         quality=quality,
         backend=backend,
     )

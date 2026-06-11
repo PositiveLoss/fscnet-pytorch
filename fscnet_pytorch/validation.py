@@ -178,7 +178,7 @@ def normalize_manifest_row(row: Mapping[str, Any], base: Path) -> dict[str, str]
 def _validate_manifest_row(row: Mapping[str, Any]) -> dict[str, str | None]:
     model = _manifest_row_model()
     if model is None:
-        return {str(key): str(value) for key, value in row.items() if value}
+        return {key: str(value) for key, value in row.items() if value}
     parsed = model.model_validate(row)
     return parsed.model_dump(exclude_none=True)
 

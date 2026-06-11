@@ -1,7 +1,7 @@
 """Export an FSC-Net checkpoint to ONNX.
 
 Example:
-  uv run python tools/export_to_onnx.py \
+  uv run python -m tools.export_to_onnx \
     --checkpoint runs/fscnet_4k48k/last.safetensors \
     --output runs/fscnet_4k48k/fscnet.onnx \
     --sample_length 48000 \
@@ -11,7 +11,6 @@ Example:
 from __future__ import annotations
 
 from pathlib import Path
-import sys
 from typing import Literal, cast
 
 import numpy as np
@@ -19,8 +18,6 @@ import onnx
 import onnxruntime as ort
 import torch
 import torch.nn.functional as F
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fscnet_pytorch.checkpoint import load_training_checkpoint
 from fscnet_pytorch.cli import option, run

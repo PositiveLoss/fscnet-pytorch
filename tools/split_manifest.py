@@ -6,10 +6,7 @@ import csv
 import json
 import random
 from pathlib import Path
-import sys
 from typing import Any
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fscnet_pytorch.cli import option, run
 

@@ -92,8 +92,8 @@ def make_progressive_targets_pyptx(
                 bsz,
                 freq,
                 frames,
-                int(window),
-                float(eps),
+                window,
+                eps,
                 _dtype_name(input_c.dtype),
             )(
                 input_c, target_c
@@ -323,7 +323,7 @@ class _GlobalLayerNormFn(torch.autograd.Function):
     ) -> torch.Tensor:
         bsz, channels, freq, frames = x.shape
         kernel = _global_layer_norm_kernel(
-            bsz, channels, freq, frames, float(eps), _dtype_name(x.dtype)
+            bsz, channels, freq, frames, eps, _dtype_name(x.dtype)
         )
         out, mean, rstd = kernel(x, weight.contiguous(), bias.contiguous())
         ctx.save_for_backward(x, weight, mean, rstd)
@@ -538,9 +538,7 @@ def fused_rope_qk_norm_pyptx(
         angles = pos[:, None] * inv_freq[None, :]
         sin = angles.sin().to(dtype=q.dtype).contiguous()
         cos = angles.cos().to(dtype=q.dtype).contiguous()
-        out = _RoPEQKNormFn.apply(
-            q.contiguous(), k.contiguous(), sin, cos, float(eps)
-        )
+        out = _RoPEQKNormFn.apply(q.contiguous(), k.contiguous(), sin, cos, eps)
         _mark_kernel_active("pyptx_rope_qk_norm")
         return out
     except Exception:
@@ -572,7 +570,7 @@ class _RoPEQKNormFn(torch.autograd.Function):
     ) -> Any:
         rows, heads, frames, dim_head = q.shape
         kernel = _rope_qk_norm_kernel(
-            rows, heads, frames, dim_head, float(eps), _dtype_name(q.dtype)
+            rows, heads, frames, dim_head, eps, _dtype_name(q.dtype)
         )
         q_out, k_out = kernel(q, k, sin, cos)
         ctx.save_for_backward(q, k)

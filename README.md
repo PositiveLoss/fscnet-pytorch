@@ -103,6 +103,17 @@ Use `--precision bf16` for bf16 CUDA autocast, or `--precision fp16` for
 explicit fp16 autocast. The legacy `--amp` flag remains an alias for fp16.
 Checkpoints are written as `*.safetensors` plus a matching `*.json` sidecar
 for config, optimizer, scheduler, and resume metadata.
+Training auto-resumes from `OUT_DIR/last.safetensors` when it exists; pass
+`--no-auto-resume` to force a fresh run or `--resume PATH` to choose a specific
+checkpoint.
+
+Validation runs after each epoch by default when `--valid_manifest` is set.
+It reports reconstruction loss and Log-Spectral Distance (LSD), one of the
+FSC-Net paper's objective evaluation metrics. PESQ is attempted when the
+optional `pesq` package is available. NISQA is reported as unavailable until a
+stable in-process scorer/model path is wired. Missing optional metric
+dependencies are reported once and do not stop training. Use `--no-eval-metrics`
+to keep validation to loss-only reporting.
 
 16 kHz to 48 kHz:
 

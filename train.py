@@ -12,6 +12,7 @@ import atexit
 import importlib
 import json
 import math
+import os
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, Literal, Sequence, cast
@@ -22,7 +23,7 @@ from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from fscnet_pytorch.audio import complex_to_ri, stft_complex
+from fscnet_pytorch.audio import complex_to_ri, resample_audio, stft_complex
 from fscnet_pytorch.checkpoint import load_training_checkpoint, save_training_checkpoint
 from fscnet_pytorch.cli import option, run
 from fscnet_pytorch.config import (
@@ -38,6 +39,10 @@ from fscnet_pytorch.discriminator import (
     set_requires_grad,
 )
 from fscnet_pytorch.losses import StageLossWeights, StageReconstructionLoss
+from fscnet_pytorch.kernels import (
+    activated_kernel_names,
+    reset_activated_kernel_names,
+)
 from fscnet_pytorch.model import FSCNet, count_parameters
 
 
@@ -62,6 +67,7 @@ MODEL_OVERRIDE_FIELDS = (
 TrackMetricValue = int | float | str | bool | None
 TimeAttention = Literal["v1", "v2"]
 PrecisionMode = Literal["fp32", "fp16", "bf16"]
+OptionalMetricState = dict[str, Any]
 
 
 class TrackioRun:
@@ -152,6 +158,142 @@ def scalar_float(value: Any) -> float:
     return float(value)
 
 
+def print_kernel_configuration(
+    args: SimpleNamespace,
+    device: torch.device,
+    precision_name: str,
+) -> None:
+    progressive = "auto" if device.type == "cuda" and precision_name == "fp32" else "inactive"
+    norm = (
+        "enabled"
+        if os.environ.get("FSCNET_ENABLE_PYPTX_NORM") == "1"
+        and device.type == "cuda"
+        and precision_name == "fp32"
+        else "inactive"
+    )
+    rope_qk = (
+        "enabled"
+        if os.environ.get("FSCNET_ENABLE_PYPTX_ROPE_QK") == "1"
+        and device.type == "cuda"
+        and precision_name == "fp32"
+        and args.time_attention == "v2"
+        and args.time_attention_qk_norm
+        and args.time_attention_rope
+        else "inactive"
+    )
+    print(
+        "Kernel configuration: "
+        f"progressive_targets={progressive}, "
+        f"global_layer_norm={norm}, "
+        f"rope_qk_norm={rope_qk}"
+    )
+
+
+def print_runtime_kernel_activations(prefix: str = "Activated kernels") -> None:
+    names = activated_kernel_names()
+    if names:
+        print(f"{prefix}: {', '.join(names)}")
+    else:
+        print(f"{prefix}: none")
+
+
+def resolve_checkpoint_to_resume(args: SimpleNamespace, out_path: Path) -> Path | None:
+    if args.resume:
+        return Path(args.resume)
+    if not args.auto_resume:
+        return None
+    candidate = out_path / "last.safetensors"
+    if candidate.exists():
+        return candidate
+    return None
+
+
+def init_optional_eval_metrics(
+    enabled: bool,
+    target_sr: int,
+) -> OptionalMetricState:
+    state: OptionalMetricState = {
+        "enabled": enabled,
+        "target_sr": target_sr,
+        "pesq": None,
+        "pesq_note_printed": False,
+        "nisqa_note_printed": False,
+    }
+    if not enabled:
+        return state
+
+    try:
+        pesq_module = importlib.import_module("pesq")
+        state["pesq"] = getattr(pesq_module, "pesq")
+    except Exception as exc:
+        state["pesq_error"] = str(exc)
+
+    try:
+        importlib.import_module("nisqa")
+        state["nisqa_error"] = (
+            "NISQA package detected, but this trainer does not have a stable "
+            "in-process NISQA scorer wired yet."
+        )
+    except Exception as exc:
+        state["nisqa_error"] = str(exc)
+
+    return state
+
+
+def maybe_pesq_batch(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    state: OptionalMetricState,
+) -> tuple[float, int]:
+    pesq_fn = state.get("pesq")
+    if pesq_fn is None:
+        if not state.get("pesq_note_printed"):
+            print(f"PESQ evaluation unavailable: {state.get('pesq_error', 'not installed')}")
+            state["pesq_note_printed"] = True
+        return 0.0, 0
+
+    eval_sr = int(state["target_sr"])
+    mode = "wb"
+    if eval_sr not in (8000, 16000):
+        pred = resample_audio(pred.detach().cpu(), eval_sr, 16000)
+        target = resample_audio(target.detach().cpu(), eval_sr, 16000)
+        eval_sr = 16000
+    else:
+        pred = pred.detach().cpu()
+        target = target.detach().cpu()
+        mode = "nb" if eval_sr == 8000 else "wb"
+
+    total = 0.0
+    count = 0
+    for pred_item, target_item in zip(pred, target):
+        try:
+            total += float(
+                pesq_fn(
+                    eval_sr,
+                    target_item.to(torch.float32).numpy(),
+                    pred_item.to(torch.float32).numpy(),
+                    mode,
+                )
+            )
+            count += 1
+        except Exception as exc:
+            if not state.get("pesq_note_printed"):
+                print(f"PESQ evaluation disabled after error: {exc}")
+                state["pesq_note_printed"] = True
+            return total, count
+    return total, count
+
+
+def maybe_print_nisqa_note(state: OptionalMetricState) -> None:
+    if not state.get("enabled") or state.get("nisqa_note_printed"):
+        return
+    print(
+        "NISQA evaluation unavailable: "
+        f"{state.get('nisqa_error', 'not installed')}"
+    )
+    state["nisqa_note_printed"] = True
+
+
 def cosine_warmup_lambda(total_steps: int, warmup_steps: int, min_lr_ratio: float):
     def fn(step: int) -> float:
         if warmup_steps > 0 and step < warmup_steps:
@@ -221,13 +363,20 @@ def validate(
     device: torch.device,
     autocast_enabled: bool,
     autocast_dtype: torch.dtype | None,
+    optional_eval_metrics: OptionalMetricState,
 ) -> dict[str, float]:
     model.eval()
-    total = 0.0
+    total_recon = 0.0
+    total_lsd = 0.0
+    total_pesq = 0.0
     count = 0
+    pesq_count = 0
+    eval_metrics_enabled = bool(optional_eval_metrics.get("enabled"))
     for batch in tqdm(loader, desc="valid", leave=False):
         lr = batch["lr"].to(device)
         hr = batch["hr"].to(device)
+        pred_wav: torch.Tensor | None = None
+        lsd: torch.Tensor | None = None
         with torch.autocast(
             device_type="cuda",
             enabled=autocast_enabled and device.type == "cuda",
@@ -244,10 +393,29 @@ def validate(
                 )
             )
             loss, _, _, _ = loss_fn(pred_stages, input_ri, target_ri, hr.shape[-1])
-        total += float(loss.detach().cpu()) * lr.shape[0]
+            if eval_metrics_enabled:
+                pred_wav = loss_fn._wav_from_ri(pred_stages[-1], hr.shape[-1])
+                lsd = loss_fn.lsd(pred_wav, hr)
+        batch_size = lr.shape[0]
+        total_recon += float(loss.detach().cpu()) * batch_size
         count += lr.shape[0]
+        if eval_metrics_enabled:
+            assert pred_wav is not None
+            assert lsd is not None
+            total_lsd += float(lsd.detach().cpu()) * batch_size
+            pesq_total_batch, pesq_count_batch = maybe_pesq_batch(
+                pred_wav, hr, optional_eval_metrics
+            )
+            total_pesq += pesq_total_batch
+            pesq_count += pesq_count_batch
+    maybe_print_nisqa_note(optional_eval_metrics)
     model.train()
-    return {"valid_recon_loss": total / max(1, count)}
+    metrics = {"valid_recon_loss": total_recon / max(1, count)}
+    if eval_metrics_enabled:
+        metrics["valid_lsd"] = total_lsd / max(1, count)
+    if pesq_count > 0:
+        metrics["valid_pesq"] = total_pesq / pesq_count
+    return metrics
 
 
 def main(
@@ -426,6 +594,12 @@ def main(
     valid_every: int = option(
         1, "--valid-every", "--valid_every", help="validate every N epochs", min=1
     ),
+    eval_metrics: bool = option(
+        True,
+        "--eval-metrics/--no-eval-metrics",
+        "--eval_metrics/--no_eval_metrics",
+        help="compute paper evaluation metrics after validation epochs",
+    ),
     seed: int = option(1234, "--seed", help="random seed"),
     torch_num_threads: int = option(
         1,
@@ -435,6 +609,12 @@ def main(
         min=0,
     ),
     resume: str | None = option(None, "--resume", help="checkpoint to resume"),
+    auto_resume: bool = option(
+        True,
+        "--auto-resume/--no-auto-resume",
+        "--auto_resume/--no_auto_resume",
+        help="resume from out_dir/last.safetensors when it exists and --resume is unset",
+    ),
 ) -> None:
     """Train FSC-Net for speech bandwidth extension."""
     args = SimpleNamespace(**locals())
@@ -459,12 +639,17 @@ def main(
         overrides=overrides,
         progressive_windows=args.progressive_windows,
     )
+    args.time_attention = cfg.time_attention
+    args.time_attention_qk_norm = cfg.time_attention_qk_norm
+    args.time_attention_rope = cfg.time_attention_rope
     if args.batch_size is None:
         args.batch_size = get_model_preset(args.model_size).suggested_batch_size
     autocast_enabled, autocast_dtype, scaler_enabled, precision_name = resolve_precision(
         args.precision, args.amp, device
     )
     args.precision = precision_name
+    reset_activated_kernel_names()
+    print_kernel_configuration(args, device, precision_name)
     if args.amp and precision_name != "fp16":
         print(f"--amp ignored because --precision {precision_name} was requested")
     parsed_mrstft_fft_sizes = tuple(
@@ -552,8 +737,9 @@ def main(
 
     start_epoch = 0
     global_step = 0
-    if args.resume:
-        ckpt = load_training_checkpoint(args.resume)
+    resume_checkpoint = resolve_checkpoint_to_resume(args, out_path)
+    if resume_checkpoint is not None:
+        ckpt = load_training_checkpoint(resume_checkpoint)
         model.load_state_dict(ckpt["model"])
         optimizer_g.load_state_dict(ckpt["optimizer_g"])
         if ckpt.get("scheduler_g"):
@@ -566,6 +752,10 @@ def main(
             scheduler_d.load_state_dict(ckpt["scheduler_d"])
         start_epoch = int(ckpt.get("epoch", 0)) + 1
         global_step = int(ckpt.get("step", 0))
+        print(
+            f"Resumed from {resume_checkpoint} at epoch {start_epoch + 1} "
+            f"with global_step={global_step}"
+        )
 
     (out_path / "config.json").write_text(
         json.dumps(
@@ -577,6 +767,11 @@ def main(
     scaler = GradScaler("cuda", enabled=scaler_enabled and device.type == "cuda")
     model.train()
     tracker = init_trackio(args, cfg.to_dict(), windows, parameter_count)
+    optional_eval_metrics = init_optional_eval_metrics(
+        args.eval_metrics and valid_loader is not None,
+        cfg.target_sr,
+    )
+    printed_kernel_runtime = False
 
     for epoch in range(start_epoch, args.epochs):
         pbar = tqdm(train_loader, desc=f"epoch {epoch + 1}/{args.epochs}")
@@ -703,20 +898,29 @@ def main(
                     if key != "recon_loss":
                         train_metrics[f"train/{key}"] = scalar_float(value)
                 tracker.log(train_metrics)
+            if not printed_kernel_runtime:
+                print_runtime_kernel_activations()
+                printed_kernel_runtime = True
 
         if valid_loader is not None and (epoch + 1) % args.valid_every == 0:
             metrics = validate(
-                model, recon_loss_fn, valid_loader, device, autocast_enabled, autocast_dtype
+                model,
+                recon_loss_fn,
+                valid_loader,
+                device,
+                autocast_enabled,
+                autocast_dtype,
+                optional_eval_metrics,
             )
             print(metrics)
             if tracker is not None:
-                tracker.log(
-                    {
-                        "step": global_step,
-                        "epoch": epoch + 1,
-                        "valid/recon_loss": metrics["valid_recon_loss"],
-                    }
-                )
+                valid_metrics: dict[str, TrackMetricValue] = {
+                    "step": global_step,
+                    "epoch": epoch + 1,
+                }
+                for key, value in metrics.items():
+                    valid_metrics[f"valid/{key.removeprefix('valid_')}"] = value
+                tracker.log(valid_metrics)
 
         if (epoch + 1) % args.save_every == 0:
             save_checkpoint(

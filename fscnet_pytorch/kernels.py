@@ -9,6 +9,25 @@ from typing import Any, Sequence
 import torch
 
 
+_ACTIVATED_KERNELS: set[str] = set()
+
+
+def _mark_kernel_active(name: str) -> None:
+    _ACTIVATED_KERNELS.add(name)
+
+
+def activated_kernel_names() -> tuple[str, ...]:
+    """Return optional pyptx kernels that have executed in this process."""
+
+    return tuple(sorted(_ACTIVATED_KERNELS))
+
+
+def reset_activated_kernel_names() -> None:
+    """Clear runtime kernel activation state."""
+
+    _ACTIVATED_KERNELS.clear()
+
+
 def _arch() -> str:
     if not torch.cuda.is_available():
         return "sm_80"
@@ -59,12 +78,14 @@ def make_progressive_targets_pyptx(
     target_c = target_ri.contiguous()
     bsz, _, freq, frames = input_c.shape
     try:
-        return [
+        targets = [
             _progressive_target_kernel(bsz, freq, frames, int(window), float(eps))(
                 input_c, target_c
             )
             for window in windows
         ]
+        _mark_kernel_active("pyptx_progressive_targets")
+        return targets
     except Exception:
         return None
 
@@ -222,7 +243,11 @@ def fused_global_layer_norm_pyptx(
     if not _can_use_global_layer_norm_kernel(x, weight, bias):
         return None
     try:
-        return _GlobalLayerNormFn.apply(x.contiguous(), weight.reshape(-1), bias.reshape(-1), eps)
+        out = _GlobalLayerNormFn.apply(
+            x.contiguous(), weight.reshape(-1), bias.reshape(-1), eps
+        )
+        _mark_kernel_active("pyptx_global_layer_norm")
+        return out
     except Exception:
         return None
 
@@ -427,9 +452,11 @@ def fused_rope_qk_norm_pyptx(
         angles = pos[:, None] * inv_freq[None, :]
         sin = angles.sin().to(dtype=q.dtype).contiguous()
         cos = angles.cos().to(dtype=q.dtype).contiguous()
-        return _RoPEQKNormFn.apply(
+        out = _RoPEQKNormFn.apply(
             q.contiguous(), k.contiguous(), sin, cos, float(eps)
         )
+        _mark_kernel_active("pyptx_rope_qk_norm")
+        return out
     except Exception:
         return None
 

@@ -1,7 +1,6 @@
 """Audio and STFT helpers for the FSC-Net PyTorch implementation.
 
-The scripts prefer torchaudio when it is installed and ABI-compatible, but fall
-back to soundfile + scipy for I/O and resampling. Model internals use only
+The scripts use torchaudio for I/O and resampling. Model internals use only
 PyTorch STFT/ISTFT.
 """
 
@@ -22,14 +21,6 @@ try:  # torchaudio is convenient but optional.
 except Exception:  # pragma: no cover - depends on local environment
     torchaudio = None  # type: ignore
     _TORCHAUDIO_OK = False
-
-try:
-    import soundfile as sf  # type: ignore
-except Exception as exc:  # pragma: no cover
-    sf = None  # type: ignore
-    _SF_IMPORT_ERROR = exc
-else:
-    _SF_IMPORT_ERROR = None
 
 try:
     from scipy.signal import resample_poly  # type: ignore
@@ -89,24 +80,11 @@ def load_audio(
     if not path.exists():
         raise FileNotFoundError(path)
 
-    wav: torch.Tensor | None
-    sr = 0
-    if _TORCHAUDIO_OK and torchaudio is not None:
-        try:
-            wav, sr = torchaudio.load(str(path))
-            wav = wav.to(torch.float32)
-        except Exception:
-            wav = None
-    else:
-        wav = None
+    if not _TORCHAUDIO_OK or torchaudio is None:  # pragma: no cover
+        raise RuntimeError("torchaudio is required for audio I/O")
 
-    if wav is None:
-        if sf is None:  # pragma: no cover
-            raise RuntimeError(
-                f"soundfile is required for audio I/O: {_SF_IMPORT_ERROR!r}"
-            )
-        data, sr = sf.read(str(path), always_2d=True, dtype="float32")
-        wav = torch.from_numpy(data.T.copy())
+    wav, sr = torchaudio.load(str(path))
+    wav = wav.to(torch.float32)
 
     if mono:
         wav = to_mono(wav)
@@ -124,15 +102,9 @@ def save_audio(path: str | Path, wav: torch.Tensor, sample_rate: int) -> None:
     wav = torch.nan_to_num(wav).clamp(-1.0, 1.0)
     wav_2d = ensure_2d_audio(wav)
 
-    if _TORCHAUDIO_OK and torchaudio is not None:
-        try:
-            torchaudio.save(str(path), wav_2d, sample_rate)
-            return
-        except Exception:
-            pass
-    if sf is None:  # pragma: no cover
-        raise RuntimeError(f"soundfile is required for audio I/O: {_SF_IMPORT_ERROR!r}")
-    sf.write(str(path), wav_2d.T.numpy(), sample_rate)
+    if not _TORCHAUDIO_OK or torchaudio is None:  # pragma: no cover
+        raise RuntimeError("torchaudio is required for audio I/O")
+    torchaudio.save(str(path), wav_2d, sample_rate)
 
 
 def match_length(x: torch.Tensor, length: int) -> torch.Tensor:

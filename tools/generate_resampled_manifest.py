@@ -69,18 +69,8 @@ def audio_paths(input_dir: Path, extensions: Sequence[str]) -> list[Path]:
 
 
 def audio_duration_seconds(path: Path) -> float:
-    import soundfile as sf
-
-    try:
-        info = sf.info(path)
-        return float(info.frames) / float(info.samplerate)
-    except sf.SoundFileError as exc:
-        LOGGER.debug("soundfile could not inspect %s: %s", path, exc)
-        import torchaudio
-
-        info_fn = getattr(torchaudio, "info")
-        info = info_fn(str(path))
-        return float(info.num_frames) / float(info.sample_rate)
+    data, sample_rate = load_audio_with_torchaudio(path)
+    return float(data.shape[0]) / float(sample_rate)
 
 
 def filter_paths_by_duration(
@@ -112,15 +102,7 @@ def filter_paths_by_duration(
 
 
 def load_audio(path: Path, channels: int) -> tuple[np.ndarray, int]:
-    import soundfile as sf
-
-    try:
-        data, sample_rate = sf.read(path, always_2d=True, dtype="float32")
-        LOGGER.debug("Decoded %s with soundfile", path)
-    except sf.SoundFileError as exc:
-        LOGGER.warning("soundfile could not decode %s: %s", path, exc)
-        LOGGER.info("Falling back to torchaudio for %s", path)
-        data, sample_rate = load_audio_with_torchaudio(path)
+    data, sample_rate = load_audio_with_torchaudio(path)
     normalized = normalize_channels(data, channels)
     LOGGER.info(
         "Loaded %s: sr=%d frames=%d channels=%d",
@@ -157,10 +139,13 @@ def normalize_channels(audio: np.ndarray, channels: int) -> np.ndarray:
 
 def write_audio(path: Path, audio: np.ndarray, sample_rate: int) -> None:
     import numpy as np
-    import soundfile as sf
+    import torch
+    import torchaudio
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(path, np.clip(audio, -1.0, 1.0), sample_rate)
+    data = np.clip(audio, -1.0, 1.0).astype(np.float32, copy=False)
+    waveform = torch.from_numpy(data.T.copy())
+    torchaudio.save(str(path), waveform, sample_rate)
 
 
 def resample_audio(

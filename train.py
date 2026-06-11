@@ -41,6 +41,7 @@ from fscnet_pytorch.discriminator import (
 from fscnet_pytorch.losses import StageLossWeights, StageReconstructionLoss
 from fscnet_pytorch.kernels import (
     activated_kernel_names,
+    pyptx_disabled,
     reset_activated_kernel_names,
 )
 from fscnet_pytorch.model import FSCNet, count_parameters
@@ -172,24 +173,29 @@ def print_kernel_configuration(
     precision_name: str,
 ) -> None:
     kernel_precision = precision_name in ("fp32", "fp16", "bf16")
-    progressive = "auto" if device.type == "cuda" and kernel_precision else "inactive"
-    norm = (
-        "enabled"
-        if os.environ.get("FSCNET_ENABLE_PYPTX_NORM") == "1"
-        and device.type == "cuda"
-        and kernel_precision
-        else "inactive"
-    )
-    rope_qk = (
-        "enabled"
-        if os.environ.get("FSCNET_ENABLE_PYPTX_ROPE_QK") == "1"
-        and device.type == "cuda"
-        and kernel_precision
-        and args.time_attention == "v2"
-        and args.time_attention_qk_norm
-        and args.time_attention_rope
-        else "inactive"
-    )
+    if pyptx_disabled():
+        progressive = norm = rope_qk = "disabled"
+    else:
+        progressive = (
+            "auto" if device.type == "cuda" and kernel_precision else "inactive"
+        )
+        norm = (
+            "enabled"
+            if os.environ.get("FSCNET_ENABLE_PYPTX_NORM") == "1"
+            and device.type == "cuda"
+            and kernel_precision
+            else "inactive"
+        )
+        rope_qk = (
+            "enabled"
+            if os.environ.get("FSCNET_ENABLE_PYPTX_ROPE_QK") == "1"
+            and device.type == "cuda"
+            and kernel_precision
+            and args.time_attention == "v2"
+            and args.time_attention_qk_norm
+            and args.time_attention_rope
+            else "inactive"
+        )
     print(
         "Kernel configuration: "
         f"progressive_targets={progressive}, "

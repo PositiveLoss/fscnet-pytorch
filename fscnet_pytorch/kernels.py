@@ -13,6 +13,11 @@ _ACTIVATED_KERNELS: set[str] = set()
 _KERNEL_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 
 
+def pyptx_disabled() -> bool:
+    value = os.environ.get("NO_PYPTX", "")
+    return value.lower() not in ("", "0", "false", "no", "off")
+
+
 def _mark_kernel_active(name: str) -> None:
     _ACTIVATED_KERNELS.add(name)
 
@@ -78,6 +83,8 @@ def make_progressive_targets_pyptx(
     Returns ``None`` when the caller should use the regular PyTorch path.
     """
 
+    if pyptx_disabled():
+        return None
     if not _can_use_progressive_target_kernel(input_ri, target_ri):
         return None
     if any(window <= 0 or window % 2 == 0 for window in windows):
@@ -286,6 +293,8 @@ def fused_global_layer_norm_pyptx(
     Uses pyptx for the forward pass and a PyTorch backward formula.
     """
 
+    if pyptx_disabled():
+        return None
     if os.environ.get("FSCNET_ENABLE_PYPTX_NORM") != "1":
         return None
     if not _can_use_global_layer_norm_kernel(x, weight, bias):
@@ -525,6 +534,8 @@ def fused_rope_qk_norm_pyptx(
 ) -> tuple[torch.Tensor, torch.Tensor] | None:
     """Apply RoPE and QK normalization to [Bf,H,T,D] q/k tensors."""
 
+    if pyptx_disabled():
+        return None
     if os.environ.get("FSCNET_ENABLE_PYPTX_ROPE_QK") != "1":
         return None
     if not _can_use_rope_qk_norm_kernel(q, k):

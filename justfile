@@ -76,14 +76,15 @@ smoke-train:
     uv run python - <<'PY'
     from pathlib import Path
     import numpy as np
-    import soundfile as sf
+    import torch
+    import torchaudio
 
     base = Path("/tmp/fscnet_just_smoke")
     sr = 8000
     for i, freq in enumerate((220, 330)):
         t = np.arange(sr // 4, dtype=np.float32) / sr
         wav = (0.2 * np.sin(2 * np.pi * freq * t)).astype(np.float32)
-        sf.write(base / f"{i}.wav", wav, sr)
+        torchaudio.save(str(base / f"{i}.wav"), torch.from_numpy(wav).unsqueeze(0), sr)
     (base / "train.txt").write_text(
         "\n".join(str((base / f"{i}.wav").resolve()) for i in range(2)) + "\n",
         encoding="utf-8",

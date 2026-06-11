@@ -1,0 +1,7 @@
+torch>=2.1
+numpy
+scipy
+soundfile
+tqdm
+# Optional but recommended for faster audio transforms:
+torchaudio

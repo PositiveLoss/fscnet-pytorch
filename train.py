@@ -226,6 +226,7 @@ def init_optional_eval_metrics(
         "target_sr": target_sr,
         "pesq": None,
         "pesq_note_printed": False,
+        "pesq_failed_samples": 0,
     }
     if not enabled:
         return state
@@ -276,10 +277,11 @@ def maybe_pesq_batch(
             )
             count += 1
         except Exception as exc:
+            state["pesq_failed_samples"] = int(state.get("pesq_failed_samples", 0)) + 1
             if not state.get("pesq_note_printed"):
-                print(f"PESQ evaluation disabled after error: {exc}")
+                print(f"PESQ evaluation skipping failed samples after error: {exc}")
                 state["pesq_note_printed"] = True
-            return total, count
+            continue
     return total, count
 
 

@@ -118,10 +118,11 @@ uv run python train.py \
 
 Use `--precision bf16` for bf16 CUDA autocast, or `--precision fp16` for
 explicit fp16 autocast.
-Optional pyptx kernels support fp32, fp16, and bf16 training. Progressive target
-generation activates automatically on CUDA. Set `FSCNET_ENABLE_PYPTX_NORM=1`
-to enable the global layer norm kernel, and set `FSCNET_ENABLE_PYPTX_ROPE_QK=1`
-to enable the fused RoPE/QK-normalization kernel for v2 attention models.
+Optional pyptx kernels support fp32, fp16, and bf16 training, and are disabled
+by default. Set `FSCNET_ENABLE_PYPTX=1` to enable the progressive target kernel
+on CUDA. With that global switch enabled, set `FSCNET_ENABLE_PYPTX_NORM=1` to
+enable the global layer norm kernel, and set `FSCNET_ENABLE_PYPTX_ROPE_QK=1` to
+enable the fused RoPE/QK-normalization kernel for v2 attention models.
 Checkpoints are written as `*.safetensors` plus a matching `*.json` sidecar
 for config, optimizer, scheduler, and resume metadata.
 Training auto-resumes from `OUT_DIR/last.safetensors` when it exists; pass

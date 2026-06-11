@@ -181,7 +181,7 @@ def print_kernel_configuration(
         progressive = norm = rope_qk = "disabled"
     else:
         progressive = (
-            "auto" if device.type == "cuda" and kernel_precision else "inactive"
+            "enabled" if device.type == "cuda" and kernel_precision else "inactive"
         )
         norm = (
             "enabled"

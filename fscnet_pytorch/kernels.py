@@ -14,8 +14,11 @@ _KERNEL_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 
 
 def pyptx_disabled() -> bool:
-    value = os.environ.get("NO_PYPTX", "")
-    return value.lower() not in ("", "0", "false", "no", "off")
+    disabled = os.environ.get("NO_PYPTX", "")
+    if disabled.lower() not in ("", "0", "false", "no", "off"):
+        return True
+    enabled = os.environ.get("FSCNET_ENABLE_PYPTX", "")
+    return enabled.lower() not in ("1", "true", "yes", "on")
 
 
 def _mark_kernel_active(name: str) -> None:

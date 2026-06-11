@@ -17,6 +17,7 @@ dependencies = [
     "torchaudio>=2.11.0",
     "torchcodec>=0.14.0",
     "tqdm>=4.68.2",
+    "trackio>=0.27.0",
     "typer>=0.26.7",
 ]
 

@@ -7,34 +7,12 @@ Example:
 
 from __future__ import annotations
 
-import argparse
 import time
 
 import torch
 
+from fscnet_pytorch.cli import option, run
 from fscnet_pytorch.model import TimeSelfAttention, TimeSelfAttentionV2
-
-
-def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Compare FSC-Net time attention blocks")
-    p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    p.add_argument("--batch_size", type=int, default=2)
-    p.add_argument("--channels", type=int, default=48)
-    p.add_argument("--freq_groups", type=int, default=257)
-    p.add_argument("--frames", type=int, default=126)
-    p.add_argument("--heads", type=int, default=4)
-    p.add_argument("--dropout", type=float, default=0.0)
-    p.add_argument("--v2_no_qk_norm", action="store_true")
-    p.add_argument("--v2_no_rope", action="store_true")
-    p.add_argument("--warmup", type=int, default=10)
-    p.add_argument("--iters", type=int, default=50)
-    p.add_argument("--seed", type=int, default=1234)
-    p.add_argument(
-        "--no_backward",
-        action="store_true",
-        help="skip forward+backward timing",
-    )
-    return p
 
 
 def count_parameters(module: torch.nn.Module) -> int:
@@ -87,39 +65,72 @@ def time_backward(
     return (time.perf_counter() - start) * 1000.0 / max(1, iters)
 
 
-def main() -> None:
-    args = build_arg_parser().parse_args()
-    torch.manual_seed(args.seed)
-    device = torch.device(args.device)
+def main(
+    device: str = option(
+        "cuda" if torch.cuda.is_available() else "cpu",
+        "--device",
+        help="torch device",
+    ),
+    batch_size: int = option(
+        2, "--batch-size", "--batch_size", help="batch size", min=1
+    ),
+    channels: int = option(48, "--channels", help="feature channels", min=1),
+    freq_groups: int = option(
+        257, "--freq-groups", "--freq_groups", help="frequency groups", min=1
+    ),
+    frames: int = option(126, "--frames", help="time frames", min=1),
+    heads: int = option(4, "--heads", help="attention heads", min=1),
+    dropout: float = option(
+        0.0, "--dropout", help="attention dropout", min=0.0, max=1.0
+    ),
+    v2_no_qk_norm: bool = option(
+        False, "--v2-no-qk-norm", "--v2_no_qk_norm", help="disable V2 QK norm"
+    ),
+    v2_no_rope: bool = option(
+        False, "--v2-no-rope", "--v2_no_rope", help="disable V2 RoPE"
+    ),
+    warmup: int = option(10, "--warmup", help="warmup iterations", min=0),
+    iters: int = option(50, "--iters", help="timed iterations", min=1),
+    seed: int = option(1234, "--seed", help="random seed"),
+    no_backward: bool = option(
+        False,
+        "--no-backward",
+        "--no_backward",
+        help="skip forward+backward timing",
+    ),
+) -> None:
+    """Compare FSC-Net time attention blocks."""
+    torch.manual_seed(seed)
+    torch_device = torch.device(device)
 
     x = torch.randn(
-        args.batch_size,
-        args.channels,
-        args.freq_groups,
-        args.frames,
-        device=device,
+        batch_size,
+        channels,
+        freq_groups,
+        frames,
+        device=torch_device,
     )
     modules = {
-        "v1": TimeSelfAttention(args.channels, args.heads, args.dropout).to(device),
+        "v1": TimeSelfAttention(channels, heads, dropout).to(torch_device),
         "v2": TimeSelfAttentionV2(
-            args.channels,
-            args.heads,
-            args.dropout,
-            qk_norm=not args.v2_no_qk_norm,
-            rope=not args.v2_no_rope,
-        ).to(device),
+            channels,
+            heads,
+            dropout,
+            qk_norm=not v2_no_qk_norm,
+            rope=not v2_no_rope,
+        ).to(torch_device),
     }
 
     print(
         "input_shape="
-        f"{tuple(x.shape)} device={device} warmup={args.warmup} iters={args.iters}"
+        f"{tuple(x.shape)} device={torch_device} warmup={warmup} iters={iters}"
     )
     for name, module in modules.items():
-        y, fwd_ms = time_forward(module, x, args.warmup, args.iters)
+        y, fwd_ms = time_forward(module, x, warmup, iters)
         bwd_ms = None
-        if not args.no_backward:
+        if not no_backward:
             x_train = x.detach().clone().requires_grad_(True)
-            bwd_ms = time_backward(module, x_train, args.warmup, args.iters)
+            bwd_ms = time_backward(module, x_train, warmup, iters)
         line = (
             f"{name}: params={count_parameters(module):,} "
             f"output_shape={tuple(y.shape)} forward_ms={fwd_ms:.3f}"
@@ -130,4 +141,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run(main)

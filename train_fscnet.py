@@ -9,14 +9,13 @@ Example:
 
 from __future__ import annotations
 
-import argparse
 import atexit
 import importlib
 import json
 import math
 from pathlib import Path
-from types import ModuleType
-from typing import Any, Sequence, cast
+from types import ModuleType, SimpleNamespace
+from typing import Any, Literal, Sequence, cast
 
 import torch
 from torch import nn
@@ -25,6 +24,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from fscnet_pytorch.audio import complex_to_ri, stft_complex
+from fscnet_pytorch.cli import option, run
 from fscnet_pytorch.config import (
     get_model_preset,
     model_preset_names,
@@ -60,6 +60,7 @@ MODEL_OVERRIDE_FIELDS = (
 )
 
 TrackMetricValue = int | float | str | bool | None
+TimeAttention = Literal["v1", "v2"]
 
 
 class TrackioRun:
@@ -89,125 +90,6 @@ class TrackioRun:
             print(f"Trackio finish failed: {exc}")
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        description="Train FSC-Net for speech bandwidth extension"
-    )
-    p.add_argument(
-        "--train_manifest",
-        default=None,
-        help="jsonl/csv/txt manifest for training audio",
-    )
-    p.add_argument(
-        "--valid_manifest", default=None, help="optional validation manifest"
-    )
-    p.add_argument("--out_dir", default="runs/fscnet", help="checkpoint/log directory")
-    p.add_argument(
-        "--model_size",
-        choices=model_preset_names(),
-        default="compact",
-        help="model size preset; explicit architecture flags override it",
-    )
-    p.add_argument(
-        "--list_model_sizes",
-        action="store_true",
-        help="print available model size presets and exit",
-    )
-
-    p.add_argument("--target_sr", type=int, default=None)
-    p.add_argument("--input_sr", type=int, default=None)
-    p.add_argument("--segment_seconds", type=float, default=2.0)
-    p.add_argument("--n_fft", type=int, default=None)
-    p.add_argument("--win_length", type=int, default=None)
-    p.add_argument("--hop_length", type=int, default=None)
-    p.add_argument("--subbands", type=int, default=None)
-    p.add_argument("--channels", type=int, default=None)
-    p.add_argument("--num_blocks", type=int, default=None)
-    p.add_argument("--rnn_hidden", type=int, default=None)
-    p.add_argument("--attention_heads", type=int, default=None)
-    p.add_argument("--time_attention", choices=("v1", "v2"), default=None)
-    p.add_argument(
-        "--time_attention_qk_norm",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="enable QK normalization for --time_attention v2",
-    )
-    p.add_argument(
-        "--time_attention_rope",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="enable rotary time positions for --time_attention v2",
-    )
-    p.add_argument("--ffc_ratio", type=float, default=None)
-    p.add_argument("--dropout", type=float, default=None)
-    p.add_argument(
-        "--progressive_windows",
-        default=None,
-        help="comma-separated windows; defaults to the selected model size preset",
-    )
-
-    p.add_argument("--epochs", type=int, default=100)
-    p.add_argument(
-        "--batch_size",
-        type=int,
-        default=None,
-        help="defaults to the selected model size preset recommendation",
-    )
-    p.add_argument("--num_workers", type=int, default=4)
-    p.add_argument("--lr_g", type=float, default=2e-4)
-    p.add_argument("--lr_d", type=float, default=1e-4)
-    p.add_argument("--warmup_steps", type=int, default=2000)
-    p.add_argument("--min_lr_ratio", type=float, default=0.05)
-    p.add_argument("--clip_grad_norm", type=float, default=5.0)
-    p.add_argument("--amp", action="store_true", help="mixed precision on CUDA")
-
-    p.add_argument("--trackio", action="store_true", help="enable Trackio logging")
-    p.add_argument("--trackio_project", default="fscnet", help="Trackio project name")
-    p.add_argument("--trackio_name", default=None, help="optional Trackio run name")
-    p.add_argument("--trackio_group", default=None, help="optional Trackio run group")
-    p.add_argument(
-        "--trackio_space_id",
-        default=None,
-        help="optional Hugging Face Space id for hosted Trackio logs",
-    )
-    p.add_argument(
-        "--trackio_server_url",
-        default=None,
-        help="optional self-hosted Trackio server URL",
-    )
-    p.add_argument(
-        "--trackio_log_every",
-        type=int,
-        default=1,
-        help="log training metrics every N optimizer steps; <=0 disables step logs",
-    )
-
-    p.add_argument("--mrstft_weight", type=float, default=1.0)
-    p.add_argument("--lsd_weight", type=float, default=0.1)
-    p.add_argument("--complex_l1_weight", type=float, default=1.0)
-    p.add_argument("--mrstft_fft_sizes", default="512,1024,2048")
-
-    p.add_argument(
-        "--adv_weight", type=float, default=0.0, help="set >0 to enable per-stage LSGAN"
-    )
-    p.add_argument("--fm_weight", type=float, default=10.0)
-    p.add_argument("--adv_start_step", type=int, default=0)
-    p.add_argument("--disc_scales", type=int, default=3)
-    p.add_argument("--disc_channels", type=int, default=16)
-
-    p.add_argument("--save_every", type=int, default=1, help="save every N epochs")
-    p.add_argument("--valid_every", type=int, default=1, help="validate every N epochs")
-    p.add_argument("--seed", type=int, default=1234)
-    p.add_argument(
-        "--torch_num_threads",
-        type=int,
-        default=1,
-        help="CPU intra-op threads; 1 avoids oversubscription on many machines",
-    )
-    p.add_argument("--resume", default=None, help="checkpoint to resume")
-    return p
-
-
 def print_model_sizes() -> None:
     for name in model_preset_names():
         preset = get_model_preset(name)
@@ -222,7 +104,7 @@ def print_model_sizes() -> None:
 
 
 def init_trackio(
-    args: argparse.Namespace,
+    args: SimpleNamespace,
     model_config: dict[str, Any],
     windows: Sequence[int],
     parameter_count: int,
@@ -289,7 +171,7 @@ def save_checkpoint(
     scheduler_g,
     epoch: int,
     step: int,
-    args: argparse.Namespace,
+    args: SimpleNamespace,
     windows: Sequence[int],
     discriminators: nn.Module | None = None,
     optimizer_d: torch.optim.Optimizer | None = None,
@@ -347,8 +229,189 @@ def validate(
     return {"valid_recon_loss": total / max(1, count)}
 
 
-def main() -> None:
-    args = build_arg_parser().parse_args()
+def main(
+    train_manifest: str | None = option(
+        None,
+        "--train-manifest",
+        "--train_manifest",
+        help="jsonl/csv/txt manifest for training audio",
+    ),
+    valid_manifest: str | None = option(
+        None,
+        "--valid-manifest",
+        "--valid_manifest",
+        help="optional validation manifest",
+    ),
+    out_dir: str = option(
+        "runs/fscnet", "--out-dir", "--out_dir", help="checkpoint/log directory"
+    ),
+    model_size: str = option(
+        "compact",
+        "--model-size",
+        "--model_size",
+        help="model size preset; explicit architecture flags override it",
+    ),
+    list_model_sizes: bool = option(
+        False,
+        "--list-model-sizes",
+        "--list_model_sizes",
+        help="print available model size presets and exit",
+    ),
+    target_sr: int | None = option(
+        None, "--target-sr", "--target_sr", help="target SR"
+    ),
+    input_sr: int | None = option(None, "--input-sr", "--input_sr", help="input SR"),
+    segment_seconds: float = option(
+        2.0, "--segment-seconds", "--segment_seconds", help="segment seconds", min=0.0
+    ),
+    n_fft: int | None = option(None, "--n-fft", "--n_fft", help="STFT FFT size"),
+    win_length: int | None = option(
+        None, "--win-length", "--win_length", help="STFT window length"
+    ),
+    hop_length: int | None = option(
+        None, "--hop-length", "--hop_length", help="STFT hop length"
+    ),
+    subbands: int | None = option(None, "--subbands", help="channel-wise subbands"),
+    channels: int | None = option(None, "--channels", help="model channels"),
+    num_blocks: int | None = option(
+        None, "--num-blocks", "--num_blocks", help="number of TF-FFC blocks"
+    ),
+    rnn_hidden: int | None = option(
+        None, "--rnn-hidden", "--rnn_hidden", help="BLSTM hidden size"
+    ),
+    attention_heads: int | None = option(
+        None,
+        "--attention-heads",
+        "--attention_heads",
+        help="time attention heads",
+    ),
+    time_attention: TimeAttention | None = option(
+        None, "--time-attention", "--time_attention", help="time attention variant"
+    ),
+    time_attention_qk_norm: bool | None = option(
+        None,
+        "--time-attention-qk-norm/--no-time-attention-qk-norm",
+        "--time_attention_qk_norm/--no-time_attention_qk_norm",
+        help="enable QK normalization for --time_attention v2",
+    ),
+    time_attention_rope: bool | None = option(
+        None,
+        "--time-attention-rope/--no-time-attention-rope",
+        "--time_attention_rope/--no-time_attention_rope",
+        help="enable rotary time positions for --time_attention v2",
+    ),
+    ffc_ratio: float | None = option(
+        None, "--ffc-ratio", "--ffc_ratio", help="FFC ratio"
+    ),
+    dropout: float | None = option(None, "--dropout", help="dropout"),
+    progressive_windows: str | None = option(
+        None,
+        "--progressive-windows",
+        "--progressive_windows",
+        help="comma-separated windows; defaults to the selected model size preset",
+    ),
+    epochs: int = option(100, "--epochs", help="training epochs", min=1),
+    batch_size: int | None = option(
+        None,
+        "--batch-size",
+        "--batch_size",
+        help="defaults to the selected model size preset recommendation",
+    ),
+    num_workers: int = option(
+        4, "--num-workers", "--num_workers", help="DataLoader workers", min=0
+    ),
+    lr_g: float = option(2e-4, "--lr-g", "--lr_g", help="generator LR", min=0.0),
+    lr_d: float = option(1e-4, "--lr-d", "--lr_d", help="discriminator LR", min=0.0),
+    warmup_steps: int = option(
+        2000, "--warmup-steps", "--warmup_steps", help="LR warmup steps", min=0
+    ),
+    min_lr_ratio: float = option(
+        0.05, "--min-lr-ratio", "--min_lr_ratio", help="minimum LR ratio", min=0.0
+    ),
+    clip_grad_norm: float = option(
+        5.0, "--clip-grad-norm", "--clip_grad_norm", help="gradient clipping", min=0.0
+    ),
+    amp: bool = option(False, "--amp", help="mixed precision on CUDA"),
+    trackio: bool = option(False, "--trackio", help="enable Trackio logging"),
+    trackio_project: str = option(
+        "fscnet", "--trackio-project", "--trackio_project", help="Trackio project name"
+    ),
+    trackio_name: str | None = option(
+        None, "--trackio-name", "--trackio_name", help="optional Trackio run name"
+    ),
+    trackio_group: str | None = option(
+        None, "--trackio-group", "--trackio_group", help="optional Trackio run group"
+    ),
+    trackio_space_id: str | None = option(
+        None,
+        "--trackio-space-id",
+        "--trackio_space_id",
+        help="optional Hugging Face Space id for hosted Trackio logs",
+    ),
+    trackio_server_url: str | None = option(
+        None,
+        "--trackio-server-url",
+        "--trackio_server_url",
+        help="optional self-hosted Trackio server URL",
+    ),
+    trackio_log_every: int = option(
+        1,
+        "--trackio-log-every",
+        "--trackio_log_every",
+        help="log training metrics every N optimizer steps; <=0 disables step logs",
+    ),
+    mrstft_weight: float = option(
+        1.0, "--mrstft-weight", "--mrstft_weight", help="MR-STFT loss weight"
+    ),
+    lsd_weight: float = option(
+        0.1, "--lsd-weight", "--lsd_weight", help="LSD loss weight"
+    ),
+    complex_l1_weight: float = option(
+        1.0, "--complex-l1-weight", "--complex_l1_weight", help="complex L1 loss weight"
+    ),
+    mrstft_fft_sizes: str = option(
+        "512,1024,2048",
+        "--mrstft-fft-sizes",
+        "--mrstft_fft_sizes",
+        help="MR-STFT FFT sizes",
+    ),
+    adv_weight: float = option(
+        0.0,
+        "--adv-weight",
+        "--adv_weight",
+        help="set >0 to enable per-stage LSGAN",
+        min=0.0,
+    ),
+    fm_weight: float = option(
+        10.0, "--fm-weight", "--fm_weight", help="feature matching weight"
+    ),
+    adv_start_step: int = option(
+        0, "--adv-start-step", "--adv_start_step", help="adversarial start step", min=0
+    ),
+    disc_scales: int = option(
+        3, "--disc-scales", "--disc_scales", help="discriminator scales", min=1
+    ),
+    disc_channels: int = option(
+        16, "--disc-channels", "--disc_channels", help="discriminator channels", min=1
+    ),
+    save_every: int = option(
+        1, "--save-every", "--save_every", help="save every N epochs", min=1
+    ),
+    valid_every: int = option(
+        1, "--valid-every", "--valid_every", help="validate every N epochs", min=1
+    ),
+    seed: int = option(1234, "--seed", help="random seed"),
+    torch_num_threads: int = option(
+        1,
+        "--torch-num-threads",
+        "--torch_num_threads",
+        help="CPU intra-op threads; 1 avoids oversubscription on many machines",
+        min=0,
+    ),
+    resume: str | None = option(None, "--resume", help="checkpoint to resume"),
+) -> None:
+    """Train FSC-Net for speech bandwidth extension."""
+    args = SimpleNamespace(**locals())
     if args.list_model_sizes:
         print_model_sizes()
         return
@@ -361,8 +424,8 @@ def main() -> None:
         torch.set_num_threads(args.torch_num_threads)
     torch.manual_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = Path(args.out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
 
     overrides = {field: getattr(args, field) for field in MODEL_OVERRIDE_FIELDS}
     cfg, windows = resolve_model_config(
@@ -372,7 +435,9 @@ def main() -> None:
     )
     if args.batch_size is None:
         args.batch_size = get_model_preset(args.model_size).suggested_batch_size
-    mrstft_fft_sizes = tuple(int(x) for x in args.mrstft_fft_sizes.split(",") if x)
+    parsed_mrstft_fft_sizes = tuple(
+        int(x) for x in args.mrstft_fft_sizes.split(",") if x
+    )
     model = FSCNet(cfg).to(device)
     parameter_count = count_parameters(model)
     print(f"Model preset: {args.model_size}; windows={windows}; config={cfg.to_dict()}")
@@ -415,7 +480,7 @@ def main() -> None:
         args.mrstft_weight, args.lsd_weight, args.complex_l1_weight
     )
     recon_loss_fn = StageReconstructionLoss(
-        cfg, windows, weights=weights, mrstft_fft_sizes=mrstft_fft_sizes
+        cfg, windows, weights=weights, mrstft_fft_sizes=parsed_mrstft_fft_sizes
     ).to(device)
 
     discriminators = None
@@ -470,7 +535,7 @@ def main() -> None:
         start_epoch = int(ckpt.get("epoch", 0)) + 1
         global_step = int(ckpt.get("step", 0))
 
-    (out_dir / "config.json").write_text(
+    (out_path / "config.json").write_text(
         json.dumps(
             {"model": cfg.to_dict(), "windows": windows, "args": vars(args)}, indent=2
         ),
@@ -615,7 +680,7 @@ def main() -> None:
 
         if (epoch + 1) % args.save_every == 0:
             save_checkpoint(
-                out_dir / f"checkpoint_epoch_{epoch + 1:04d}.pt",
+                out_path / f"checkpoint_epoch_{epoch + 1:04d}.pt",
                 model,
                 optimizer_g,
                 scheduler_g,
@@ -628,7 +693,7 @@ def main() -> None:
                 scheduler_d=scheduler_d,
             )
             save_checkpoint(
-                out_dir / "last.pt",
+                out_path / "last.pt",
                 model,
                 optimizer_g,
                 scheduler_g,
@@ -654,4 +719,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    run(main)

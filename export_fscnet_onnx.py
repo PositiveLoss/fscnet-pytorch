@@ -11,9 +11,8 @@ Example:
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import numpy as np
 import onnx
@@ -21,9 +20,11 @@ import onnxruntime as ort
 import torch
 import torch.nn.functional as F
 
+from fscnet_pytorch.cli import option, run
 from fscnet_pytorch.model import FSCNet, FSCNetConfig, SpectralTransform
 
 MAX_VERIFIED_OPSET = 25
+OutputKind = Literal["wav", "spectrogram"]
 
 
 class FSCNetONNXWrapper(torch.nn.Module):
@@ -91,46 +92,6 @@ class FSCNetONNXWrapper(torch.nn.Module):
         return wav[:, 0, start : start + self.sample_length]
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Export FSC-Net checkpoint to ONNX")
-    p.add_argument(
-        "--checkpoint", required=True, help="checkpoint from train_fscnet.py"
-    )
-    p.add_argument("--output", required=True, help="output .onnx path")
-    p.add_argument(
-        "--sample_length",
-        type=int,
-        required=True,
-        help="fixed input/output sample length, e.g. 48000 for one second at 48 kHz",
-    )
-    p.add_argument("--batch_size", type=int, default=1)
-    p.add_argument(
-        "--output_kind",
-        choices=("wav", "spectrogram"),
-        default="wav",
-        help="wav exports enhanced audio; spectrogram exports final [B,2,F,frames]",
-    )
-    p.add_argument(
-        "--opset",
-        type=int,
-        default=0,
-        help=(
-            "ONNX opset. 0 selects the newest opset verified with ONNX Runtime "
-            f"for this model ({MAX_VERIFIED_OPSET})."
-        ),
-    )
-    p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    p.add_argument("--verify", action="store_true", help="run ONNX checker and ORT")
-    p.add_argument(
-        "--provider",
-        default="CPUExecutionProvider",
-        help="ONNX Runtime provider used by --verify",
-    )
-    p.add_argument("--atol", type=float, default=1.0e-3)
-    p.add_argument("--rtol", type=float, default=1.0e-3)
-    return p
-
-
 def enable_export_fft(model: FSCNet) -> None:
     for module in model.modules():
         if isinstance(module, SpectralTransform):
@@ -185,25 +146,58 @@ def verify_onnx(
     )
 
 
-def main() -> None:
-    args = build_arg_parser().parse_args()
-    if args.sample_length <= 0:
-        raise ValueError("--sample_length must be positive")
-    if args.batch_size <= 0:
-        raise ValueError("--batch_size must be positive")
-
-    opset = choose_opset(args.opset)
-    output = Path(args.output)
+def main(
+    checkpoint: Path = option(
+        ..., "--checkpoint", help="checkpoint from train_fscnet.py"
+    ),
+    output: Path = option(..., "--output", help="output .onnx path"),
+    sample_length: int = option(
+        ...,
+        "--sample-length",
+        "--sample_length",
+        help="fixed input/output sample length, e.g. 48000 for one second at 48 kHz",
+        min=1,
+    ),
+    batch_size: int = option(
+        1, "--batch-size", "--batch_size", help="dummy export batch size", min=1
+    ),
+    output_kind: OutputKind = option(
+        "wav",
+        "--output-kind",
+        "--output_kind",
+        help="wav exports enhanced audio; spectrogram exports final [B,2,F,frames]",
+    ),
+    opset: int = option(
+        0,
+        "--opset",
+        help=(
+            "ONNX opset. 0 selects the newest opset verified with ONNX Runtime "
+            f"for this model ({MAX_VERIFIED_OPSET})."
+        ),
+        min=0,
+    ),
+    device: str = option(
+        "cuda" if torch.cuda.is_available() else "cpu", "--device", help="torch device"
+    ),
+    verify: bool = option(False, "--verify", help="run ONNX checker and ORT"),
+    provider: str = option(
+        "CPUExecutionProvider",
+        "--provider",
+        help="ONNX Runtime provider used by --verify",
+    ),
+    atol: float = option(1.0e-3, "--atol", help="absolute tolerance", min=0.0),
+    rtol: float = option(1.0e-3, "--rtol", help="relative tolerance", min=0.0),
+) -> None:
+    """Export an FSC-Net checkpoint to ONNX."""
+    selected_opset = choose_opset(opset)
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    device = torch.device(args.device)
-    model = load_model(args.checkpoint, device)
-    wrapper = FSCNetONNXWrapper(model, args.sample_length, args.output_kind).to(device)
+    torch_device = torch.device(device)
+    model = load_model(str(checkpoint), torch_device)
+    wrapper = FSCNetONNXWrapper(model, sample_length, output_kind).to(torch_device)
     wrapper.eval()
-    sample = torch.randn(args.batch_size, args.sample_length, device=device)
-    output_name = (
-        "enhanced_wav" if args.output_kind == "wav" else "enhanced_spectrogram"
-    )
+    sample = torch.randn(batch_size, sample_length, device=torch_device)
+    output_name = "enhanced_wav" if output_kind == "wav" else "enhanced_spectrogram"
 
     torch.onnx.export(
         wrapper,
@@ -211,7 +205,7 @@ def main() -> None:
         output,
         input_names=["wav"],
         output_names=[output_name],
-        opset_version=opset,
+        opset_version=selected_opset,
         dynamo=True,
         optimize=True,
         verify=False,
@@ -221,15 +215,15 @@ def main() -> None:
     actual_opsets = [
         imp.version for imp in onnx.load(output).opset_import if imp.domain == ""
     ]
-    actual_opset = actual_opsets[0] if actual_opsets else opset
+    actual_opset = actual_opsets[0] if actual_opsets else selected_opset
     print(f"wrote {output} with ONNX opset {actual_opset}")
-    if actual_opset != opset:
+    if actual_opset != selected_opset:
         raise RuntimeError(
-            f"Requested opset {opset}, but exporter wrote {actual_opset}"
+            f"Requested opset {selected_opset}, but exporter wrote {actual_opset}"
         )
-    if args.verify:
-        verify_onnx(output, wrapper, sample, args.provider, args.atol, args.rtol)
+    if verify:
+        verify_onnx(output, wrapper, sample, provider, atol, rtol)
 
 
 if __name__ == "__main__":
-    main()
+    run(main)

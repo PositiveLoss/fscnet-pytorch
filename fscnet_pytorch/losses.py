@@ -52,9 +52,7 @@ def make_progressive_targets(
         if window <= 1:
             mag = mag_y
         else:
-            mag = (mag_x + sliding_average_frequency(residual, window)).clamp_min(
-                0.0
-            )
+            mag = (mag_x + sliding_average_frequency(residual, window)).clamp_min(0.0)
         spec = mag * phase_y
         targets.append(torch.stack((spec.real, spec.imag), dim=1))
     return targets

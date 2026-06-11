@@ -17,15 +17,12 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable, Literal, Sequence
+from typing import TYPE_CHECKING, Iterable, Literal, Sequence
 
 if TYPE_CHECKING:
     import numpy as np
 
-try:
-    import typer
-except ImportError:  # pragma: no cover - depends on local environment
-    typer = None  # type: ignore[assignment]
+from fscnet_pytorch.cli import option, run
 
 
 DEFAULT_EXTENSIONS = (".wav", ".flac", ".ogg", ".aiff", ".aif", ".aifc")
@@ -55,12 +52,6 @@ class WorkResult:
     index: int
     row: dict[str, str]
     message: str
-
-
-def option(default: Any, *param_decls: str, help: str, **kwargs: Any) -> Any:
-    if typer is None:
-        return default
-    return typer.Option(default, *param_decls, help=help, **kwargs)
 
 
 def audio_paths(input_dir: Path, extensions: Sequence[str]) -> list[Path]:
@@ -151,7 +142,9 @@ def resample_audio(
     return out.reshape(frame_count, channels)
 
 
-def _process_resampler_chunk(resampler: object, chunk: np.ndarray) -> tuple[list[float], object]:
+def _process_resampler_chunk(
+    resampler: object, chunk: np.ndarray
+) -> tuple[list[float], object]:
     process = getattr(resampler, "process")
     try:
         output, stats = process(chunk)
@@ -307,9 +300,7 @@ def main(
         help="parallel worker processes; 0 uses os.cpu_count(), 1 disables concurrency",
         min=0,
     ),
-    limit: int | None = option(
-        None, "--limit", help="process at most N files", min=1
-    ),
+    limit: int | None = option(None, "--limit", help="process at most N files", min=1),
 ) -> None:
     """Generate an FSC-Net training manifest with fast-audio-resampler."""
     if channels not in {1, 2}:
@@ -322,7 +313,9 @@ def main(
         if manifest is not None
         else out_dir / "manifest.jsonl"
     )
-    extension_values = tuple(ext.strip().lower() for ext in extensions.split(",") if ext)
+    extension_values = tuple(
+        ext.strip().lower() for ext in extensions.split(",") if ext
+    )
     sources = audio_paths(input_dir, extension_values)
     if limit is not None:
         sources = sources[:limit]
@@ -374,8 +367,4 @@ def main(
 
 
 if __name__ == "__main__":
-    if typer is None:
-        raise SystemExit(
-            "Typer is required to run this CLI. Install typer, then rerun the script."
-        )
-    typer.run(main)
+    run(main)

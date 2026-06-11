@@ -150,7 +150,9 @@ def validate_progressive_windows(windows: Iterable[int]) -> tuple[int, ...]:
         raise ValueError("At least one progressive window is required")
     for window in validated:
         if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
-            raise ValueError(f"Progressive windows must be positive integers: {validated}")
+            raise ValueError(
+                f"Progressive windows must be positive integers: {validated}"
+            )
     return validated
 
 

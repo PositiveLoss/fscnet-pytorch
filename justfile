@@ -32,23 +32,23 @@ sizes:
 
 # Generate a paired JSONL manifest with fast-audio-resampler.
 manifest input_dir out_dir input_sr="4000" target_sr="48000" workers="0":
-    uv run python generate_resampled_manifest.py \
+    uv run python tools/generate_resampled_manifest.py \
       --input_dir {{input_dir}} \
       --out_dir {{out_dir}} \
       --input_sr {{input_sr}} \
       --target_sr {{target_sr}} \
       --workers {{workers}}
 
-# Split a manifest into train.jsonl and valid.json.
+# Split a manifest into train.jsonl and valid.jsonl.
 split-manifest manifest valid_ratio="0.1" seed="1234":
-    uv run python split_manifest.py \
+    uv run python tools/split_manifest.py \
       --manifest {{manifest}} \
       --valid_ratio {{valid_ratio}} \
       --seed {{seed}}
 
 # Compare time attention blocks. Override with: just compare-attn cpu 1 32 64 64
 compare-attn device="cuda" batch="2" channels="48" freq_groups="257" frames="126":
-    uv run python compare_time_attention.py \
+    uv run python tools/compare_time_attention.py \
       --device {{device}} \
       --batch_size {{batch}} \
       --channels {{channels}} \
@@ -57,7 +57,7 @@ compare-attn device="cuda" batch="2" channels="48" freq_groups="257" frames="126
 
 # Compare bare SDPA V2 against V1.
 compare-attn-bare device="cuda" batch="2" channels="48" freq_groups="257" frames="126":
-    uv run python compare_time_attention.py \
+    uv run python tools/compare_time_attention.py \
       --device {{device}} \
       --batch_size {{batch}} \
       --channels {{channels}} \
@@ -172,7 +172,7 @@ infer checkpoint input output:
 
 # Export ONNX for a fixed sample length.
 onnx checkpoint output sample_length="48000":
-    uv run python export_to_onnx.py \
+    uv run python tools/export_to_onnx.py \
       --checkpoint {{checkpoint}} \
       --output {{output}} \
       --sample_length {{sample_length}} \

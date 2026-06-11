@@ -17,11 +17,14 @@ import json
 import logging
 import os
 from pathlib import Path
+import sys
 import time
 from typing import TYPE_CHECKING, Iterable, Literal, Sequence
 
 if TYPE_CHECKING:
     import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fscnet_pytorch.cli import option, run
 

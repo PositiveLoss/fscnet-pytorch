@@ -1,14 +1,18 @@
 """Compare FSC-Net time attention implementations.
 
 Example:
-  uv run python compare_time_attention.py --device cuda --batch_size 2 --frames 126
+  uv run python tools/compare_time_attention.py --device cuda --batch_size 2 --frames 126
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+import sys
 import time
 
 import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fscnet_pytorch.cli import option, run
 from fscnet_pytorch.model import TimeSelfAttention, TimeSelfAttentionV2

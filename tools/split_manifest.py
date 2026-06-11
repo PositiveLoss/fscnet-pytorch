@@ -6,7 +6,10 @@ import csv
 import json
 import random
 from pathlib import Path
+import sys
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fscnet_pytorch.cli import option, run
 
@@ -70,7 +73,7 @@ def split_count(total: int, valid_ratio: float) -> int:
 
 
 def default_output_paths(manifest: Path) -> tuple[Path, Path]:
-    return manifest.with_name("train.jsonl"), manifest.with_name("valid.json")
+    return manifest.with_name("train.jsonl"), manifest.with_name("valid.jsonl")
 
 
 def main(
@@ -89,7 +92,7 @@ def main(
         None,
         "--valid-out",
         "--valid_out",
-        help="validation output path; defaults to valid.json next to input",
+        help="validation output path; defaults to valid.jsonl next to input",
     ),
     valid_ratio: float = option(
         0.1,

@@ -44,7 +44,7 @@ To precompute paired inputs with `fast-audio-resampler`, generate a JSONL
 manifest with clean HR files and simulated LR files:
 
 ```bash
-uv run python generate_resampled_manifest.py \
+uv run python tools/generate_resampled_manifest.py \
   --input_dir /path/to/clean_audio \
   --out_dir data/fscnet_4k48 \
   --input_sr 4000 \
@@ -66,19 +66,19 @@ longer than 30s are skipped by default.
 Split the generated manifest into train and validation files:
 
 ```bash
-uv run python split_manifest.py \
+uv run python tools/split_manifest.py \
   --manifest data/fscnet_4k48/manifest.jsonl \
   --valid_ratio 0.1 \
   --seed 1234
 ```
 
-This writes `data/fscnet_4k48/train.jsonl` and `data/fscnet_4k48/valid.json`.
+This writes `data/fscnet_4k48/train.jsonl` and `data/fscnet_4k48/valid.jsonl`.
 Use those manifests for training:
 
 ```bash
 uv run python train.py \
   --train_manifest data/fscnet_4k48/train.jsonl \
-  --valid_manifest data/fscnet_4k48/valid.json \
+  --valid_manifest data/fscnet_4k48/valid.jsonl \
   --out_dir runs/fscnet_4k48 \
   --input_sr 4000 \
   --target_sr 48000
@@ -217,8 +217,8 @@ uv run python train.py \
 Compare the time-attention blocks directly:
 
 ```bash
-uv run python compare_time_attention.py --device cuda
-uv run python compare_time_attention.py --device cuda --v2_no_qk_norm --v2_no_rope
+uv run python tools/compare_time_attention.py --device cuda
+uv run python tools/compare_time_attention.py --device cuda --v2_no_qk_norm --v2_no_rope
 ```
 
 Track training with Trackio:
@@ -284,7 +284,7 @@ uv run python inference.py \
 Export a trained checkpoint for a fixed input length:
 
 ```bash
-uv run python export_to_onnx.py \
+uv run python tools/export_to_onnx.py \
   --checkpoint runs/fscnet_4k48k/last.safetensors \
   --output runs/fscnet_4k48k/fscnet_1s.onnx \
   --sample_length 48000 \

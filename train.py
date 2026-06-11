@@ -169,6 +169,22 @@ def scalar_float(value: Any) -> float:
     return float(value)
 
 
+def gpu_memory_summary(device: torch.device) -> str:
+    if device.type != "cuda":
+        return "gpu_mem=na"
+    allocated = torch.cuda.memory_allocated(device) / 1024**3
+    reserved = torch.cuda.memory_reserved(device) / 1024**3
+    peak = torch.cuda.max_memory_allocated(device) / 1024**3
+    return f"gpu_mem={allocated:.2f}G/{reserved:.2f}G peak={peak:.2f}G"
+
+
+def train_stage_loss_summary(logs: dict[str, float]) -> str:
+    stage_items = sorted(
+        (key, value) for key, value in logs.items() if key.startswith("stage_")
+    )
+    return " ".join(f"{key.removesuffix('_loss')}={value:.4f}" for key, value in stage_items)
+
+
 def gradients_are_finite(parameters: Iterable[torch.nn.Parameter]) -> bool:
     for parameter in parameters:
         grad = parameter.grad
@@ -692,7 +708,7 @@ def main(
         help="log training metrics every N optimizer steps; <=0 disables step logs",
     ),
     train_log_every: int = option(
-        50,
+        1,
         "--train-log-every",
         "--train_log_every",
         help="print training metrics every N optimizer steps; <=0 disables console logs",
@@ -973,6 +989,9 @@ def main(
 
     for epoch in range(start_epoch, args.epochs):
         epoch_started = time.perf_counter()
+        data_started = time.perf_counter()
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
         pbar = tqdm(
             train_loader,
             desc=f"epoch {epoch + 1}/{args.epochs}",
@@ -981,6 +1000,8 @@ def main(
         for step_in_epoch, batch in enumerate(
             islice(pbar, train_steps_per_epoch), start=1
         ):
+            data_time = time.perf_counter() - data_started
+            step_started = time.perf_counter()
             lr = batch["lr"].to(device, non_blocking=True)
             hr = batch["hr"].to(device, non_blocking=True)
 
@@ -1076,11 +1097,17 @@ def main(
                 set_requires_grad(discriminators_active, True)
 
             global_step += 1
+            step_time = time.perf_counter() - step_started
+            epoch_elapsed = max(1e-6, time.perf_counter() - epoch_started)
+            remaining_steps = max(0, train_steps_per_epoch - step_in_epoch)
+            eta_seconds = remaining_steps * (epoch_elapsed / max(1, step_in_epoch))
+            batch_samples = int(lr.shape[0])
             pbar.set_postfix(
                 recon=f"{logs['recon_loss']:.4f}",
                 g=f"{float(loss_g.detach().cpu()):.4f}",
                 d=f"{d_loss_val:.4f}",
                 lr=f"{scheduler_g.get_last_lr()[0]:.2e}",
+                mem=gpu_memory_summary(device),
             )
             if (
                 tracker is not None
@@ -1113,19 +1140,29 @@ def main(
                 args.train_log_every > 0
                 and (global_step == 1 or global_step % args.train_log_every == 0)
             ):
-                elapsed = max(1e-6, time.perf_counter() - epoch_started)
+                stage_losses = train_stage_loss_summary(logs)
                 print(
                     "train "
                     f"epoch={epoch + 1}/{args.epochs} "
                     f"step={step_in_epoch}/{train_steps_per_epoch} "
                     f"global_step={global_step} "
+                    f"samples={batch_samples} "
                     f"recon={scalar_float(logs['recon_loss']):.4f} "
                     f"g={float(loss_g.detach().cpu()):.4f} "
                     f"d={d_loss_val:.4f} "
+                    f"adv={float(adv_val.detach().cpu()):.4f} "
+                    f"fm={float(fm_val.detach().cpu()):.4f} "
                     f"lr={scalar_float(scheduler_g.get_last_lr()[0]):.2e} "
-                    f"steps_per_sec={step_in_epoch / elapsed:.3f}",
+                    f"data_s={data_time:.3f} "
+                    f"step_s={step_time:.3f} "
+                    f"steps_per_sec={step_in_epoch / epoch_elapsed:.3f} "
+                    f"samples_per_sec={batch_samples / max(1e-6, step_time):.2f} "
+                    f"eta_min={eta_seconds / 60.0:.1f} "
+                    f"{gpu_memory_summary(device)} "
+                    f"{stage_losses}",
                     flush=True,
                 )
+            data_started = time.perf_counter()
             if (
                 valid_loader is not None
                 and args.eval_steps > 0

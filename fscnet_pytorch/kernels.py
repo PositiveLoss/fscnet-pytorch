@@ -292,6 +292,7 @@ def fused_global_layer_norm_pyptx(
     """Global layer norm over [C,F,T] for each batch item.
 
     Uses pyptx for the forward pass and a PyTorch backward formula.
+    The active model path uses GlobalLayerNorm parameters shaped [1,C,1,1].
     """
 
     if pyptx_disabled():
@@ -313,6 +314,7 @@ def fused_global_layer_norm_pyptx(
 def _can_use_global_layer_norm_kernel(
     x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
 ) -> bool:
+    parameter_shape = (1, x.shape[1], 1, 1) if x.ndim == 4 else ()
     return (
         x.is_cuda
         and weight.is_cuda
@@ -321,8 +323,8 @@ def _can_use_global_layer_norm_kernel(
         and weight.dtype == torch.float32
         and bias.dtype == torch.float32
         and x.ndim == 4
-        and weight.numel() == x.shape[1]
-        and bias.numel() == x.shape[1]
+        and tuple(weight.shape) == parameter_shape
+        and tuple(bias.shape) == parameter_shape
     )
 
 

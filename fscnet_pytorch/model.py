@@ -69,26 +69,6 @@ class GlobalLayerNorm(nn.Module):
         return (x - mean) * torch.rsqrt(var + self.eps) * self.weight + self.bias
 
 
-class SingleGroupNorm(nn.Module):
-    """GroupNorm(num_groups=1) expressed with primitive tensor ops."""
-
-    def __init__(self, channels: int, eps: float = 1.0e-5) -> None:
-        super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(channels))
-        self.bias = nn.Parameter(torch.zeros(channels))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = fused_global_layer_norm_pyptx(x, self.weight, self.bias, self.eps)
-        if out is not None:
-            return out
-        mean = x.mean(dim=(1, 2, 3), keepdim=True)
-        var = x.var(dim=(1, 2, 3), keepdim=True, unbiased=False)
-        weight = self.weight.view(1, -1, 1, 1)
-        bias = self.bias.view(1, -1, 1, 1)
-        return (x - mean) * torch.rsqrt(var + self.eps) * weight + bias
-
-
 class SpectralTransform(nn.Module):
     """Global branch used inside the article's Fast Fourier Convolution.
 

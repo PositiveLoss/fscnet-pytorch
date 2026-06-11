@@ -263,6 +263,12 @@ def init_trackio(
     return run
 
 
+def scalar_float(value: Any) -> float:
+    if isinstance(value, torch.Tensor):
+        return float(value.detach().cpu())
+    return float(value)
+
+
 def cosine_warmup_lambda(total_steps: int, warmup_steps: int, min_lr_ratio: float):
     def fn(step: int) -> float:
         if warmup_steps > 0 and step < warmup_steps:
@@ -578,19 +584,21 @@ def main() -> None:
                 train_metrics: dict[str, TrackMetricValue] = {
                     "step": global_step,
                     "epoch": epoch + 1,
-                    "train/recon_loss": logs["recon_loss"],
+                    "train/recon_loss": scalar_float(logs["recon_loss"]),
                     "train/g_loss": float(loss_g.detach().cpu()),
                     "train/d_loss": d_loss_val,
                     "train/adv_loss": float(adv_val.detach().cpu()),
                     "train/fm_loss": float(fm_val.detach().cpu()),
-                    "train/lr_g": scheduler_g.get_last_lr()[0],
+                    "train/lr_g": scalar_float(scheduler_g.get_last_lr()[0]),
                     "train/use_adv": use_adv,
                 }
                 if scheduler_d is not None:
-                    train_metrics["train/lr_d"] = scheduler_d.get_last_lr()[0]
+                    train_metrics["train/lr_d"] = scalar_float(
+                        scheduler_d.get_last_lr()[0]
+                    )
                 for key, value in logs.items():
                     if key != "recon_loss":
-                        train_metrics[f"train/{key}"] = value
+                        train_metrics[f"train/{key}"] = scalar_float(value)
                 tracker.log(train_metrics)
 
         if valid_loader is not None and (epoch + 1) % args.valid_every == 0:

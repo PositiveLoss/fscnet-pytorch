@@ -109,14 +109,15 @@ def resample_audio(
         return np.ascontiguousarray(audio, dtype=np.float32)
 
     try:
-        from fast_audio_resampler import F32Resampler
+        import fast_audio_resampler
     except ImportError as exc:
         raise RuntimeError(
             "fast-audio-resampler is required. Install the wheel declared in "
             "pyproject.toml before running this script."
         ) from exc
 
-    resampler = F32Resampler(
+    f32_resampler = getattr(fast_audio_resampler, "F32Resampler")
+    resampler = f32_resampler(
         int(input_rate),
         int(output_rate),
         int(channels),

@@ -12,19 +12,24 @@ precomputed narrowband inputs without falling back to its built-in resampler.
 
 from __future__ import annotations
 
-import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Literal, Sequence
 
 if TYPE_CHECKING:
     import numpy as np
 
+try:
+    import typer
+except ImportError:  # pragma: no cover - depends on local environment
+    typer = None  # type: ignore[assignment]
+
 
 DEFAULT_EXTENSIONS = (".wav", ".flac", ".ogg", ".aiff", ".aif", ".aifc")
+Quality = Literal["fast", "balanced", "best"]
 
 
 @dataclass(frozen=True)
@@ -52,74 +57,10 @@ class WorkResult:
     message: str
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Generate an FSC-Net training manifest with fast-audio-resampler"
-    )
-    parser.add_argument(
-        "--input_dir",
-        required=True,
-        help="directory containing clean source audio files",
-    )
-    parser.add_argument(
-        "--out_dir",
-        required=True,
-        help="directory for resampled HR/LR files and the manifest",
-    )
-    parser.add_argument(
-        "--manifest",
-        default=None,
-        help="output JSONL path; defaults to <out_dir>/manifest.jsonl",
-    )
-    parser.add_argument("--target_sr", type=int, default=48_000)
-    parser.add_argument("--input_sr", type=int, default=4_000)
-    parser.add_argument(
-        "--channels",
-        type=int,
-        default=1,
-        choices=(1, 2),
-        help="output channel count; 1 mixes source audio to mono",
-    )
-    parser.add_argument(
-        "--quality",
-        default="balanced",
-        choices=("fast", "balanced", "best"),
-        help="fast-audio-resampler quality preset",
-    )
-    parser.add_argument(
-        "--backend",
-        default="auto",
-        help="fast-audio-resampler backend, for example auto or scalar",
-    )
-    parser.add_argument(
-        "--chunk_frames",
-        type=int,
-        default=0,
-        help="streaming chunk size in frames; 0 processes each file in one call",
-    )
-    parser.add_argument(
-        "--extensions",
-        default=",".join(DEFAULT_EXTENSIONS),
-        help="comma-separated input extensions",
-    )
-    parser.add_argument(
-        "--absolute_paths",
-        action="store_true",
-        help="write absolute paths into the manifest instead of paths relative to it",
-    )
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="overwrite existing generated wav files",
-    )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=0,
-        help="parallel worker processes; 0 uses os.cpu_count(), 1 disables concurrency",
-    )
-    parser.add_argument("--limit", type=int, default=None, help="process at most N files")
-    return parser
+def option(default: Any, *param_decls: str, help: str, **kwargs: Any) -> Any:
+    if typer is None:
+        return default
+    return typer.Option(default, *param_decls, help=help, **kwargs)
 
 
 def audio_paths(input_dir: Path, extensions: Sequence[str]) -> list[Path]:
@@ -295,19 +236,95 @@ def resolve_workers(workers: int) -> int:
     return workers
 
 
-def main() -> None:
-    args = build_arg_parser().parse_args()
-    input_dir = Path(args.input_dir).expanduser().resolve()
-    out_dir = Path(args.out_dir).expanduser().resolve()
+def main(
+    input_dir: Path = option(
+        ...,
+        "--input-dir",
+        "--input_dir",
+        help="directory containing clean source audio files",
+    ),
+    out_dir: Path = option(
+        ...,
+        "--out-dir",
+        "--out_dir",
+        help="directory for resampled HR/LR files and the manifest",
+    ),
+    manifest: Path | None = option(
+        None,
+        "--manifest",
+        help="output JSONL path; defaults to <out_dir>/manifest.jsonl",
+    ),
+    target_sr: int = option(
+        48_000, "--target-sr", "--target_sr", help="HR sample rate", min=1
+    ),
+    input_sr: int = option(
+        4_000, "--input-sr", "--input_sr", help="narrowband rate", min=1
+    ),
+    channels: int = option(
+        1,
+        "--channels",
+        help="output channel count; 1 mixes source audio to mono",
+        min=1,
+        max=2,
+    ),
+    quality: Quality = option(
+        "balanced",
+        "--quality",
+        help="fast-audio-resampler quality preset",
+    ),
+    backend: str = option(
+        "auto",
+        "--backend",
+        help="fast-audio-resampler backend, for example auto or scalar",
+    ),
+    chunk_frames: int = option(
+        0,
+        "--chunk-frames",
+        "--chunk_frames",
+        help="streaming chunk size in frames; 0 processes each file in one call",
+        min=0,
+    ),
+    extensions: str = option(
+        ",".join(DEFAULT_EXTENSIONS),
+        "--extensions",
+        help="comma-separated input extensions",
+    ),
+    absolute_paths: bool = option(
+        False,
+        "--absolute-paths",
+        "--absolute_paths",
+        help="write absolute paths into the manifest instead of paths relative to it",
+    ),
+    overwrite: bool = option(
+        False,
+        "--overwrite",
+        help="overwrite existing generated wav files",
+    ),
+    workers: int = option(
+        0,
+        "--workers",
+        help="parallel worker processes; 0 uses os.cpu_count(), 1 disables concurrency",
+        min=0,
+    ),
+    limit: int | None = option(
+        None, "--limit", help="process at most N files", min=1
+    ),
+) -> None:
+    """Generate an FSC-Net training manifest with fast-audio-resampler."""
+    if channels not in {1, 2}:
+        raise ValueError("--channels must be 1 or 2")
+
+    input_dir = input_dir.expanduser().resolve()
+    out_dir = out_dir.expanduser().resolve()
     manifest_path = (
-        Path(args.manifest).expanduser().resolve()
-        if args.manifest
+        manifest.expanduser().resolve()
+        if manifest is not None
         else out_dir / "manifest.jsonl"
     )
-    extensions = tuple(ext.strip().lower() for ext in args.extensions.split(",") if ext)
-    sources = audio_paths(input_dir, extensions)
-    if args.limit is not None:
-        sources = sources[: args.limit]
+    extension_values = tuple(ext.strip().lower() for ext in extensions.split(",") if ext)
+    sources = audio_paths(input_dir, extension_values)
+    if limit is not None:
+        sources = sources[:limit]
     if not sources:
         raise ValueError(f"No audio files found in {input_dir}")
 
@@ -320,27 +337,27 @@ def main() -> None:
             input_dir=input_dir,
             out_dir=out_dir,
             manifest_path=manifest_path,
-            input_sr=args.input_sr,
-            target_sr=args.target_sr,
-            channels=args.channels,
-            quality=args.quality,
-            backend=args.backend,
-            chunk_frames=args.chunk_frames,
-            absolute_paths=args.absolute_paths,
-            overwrite=args.overwrite,
+            input_sr=input_sr,
+            target_sr=target_sr,
+            channels=channels,
+            quality=quality,
+            backend=backend,
+            chunk_frames=chunk_frames,
+            absolute_paths=absolute_paths,
+            overwrite=overwrite,
         )
         for index, source in enumerate(sources, start=1)
     ]
 
-    workers = resolve_workers(args.workers)
-    print(f"Processing {len(work_items)} files with {workers} worker(s)")
-    if workers == 1:
+    worker_count = resolve_workers(workers)
+    print(f"Processing {len(work_items)} files with {worker_count} worker(s)")
+    if worker_count == 1:
         results = [process_file(item) for item in work_items]
         for result in results:
             print(result.message)
     else:
         results = []
-        with ProcessPoolExecutor(max_workers=workers) as executor:
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
             futures = [executor.submit(process_file, item) for item in work_items]
             for future in as_completed(futures):
                 result = future.result()
@@ -356,4 +373,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if typer is None:
+        raise SystemExit(
+            "Typer is required to run this CLI. Install typer, then rerun the script."
+        )
+    typer.run(main)

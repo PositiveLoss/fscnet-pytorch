@@ -196,6 +196,7 @@ dependencies = [
     { name = "onnx" },
     { name = "onnxruntime-gpu", extra = ["cuda"] },
     { name = "onnxscript" },
+    { name = "pesq" },
     { name = "pydantic" },
     { name = "pyptx" },
     { name = "safetensors" },
@@ -223,6 +224,7 @@ requires-dist = [
     { name = "onnx", specifier = ">=1.21.0" },
     { name = "onnxruntime-gpu", extras = ["cuda"], specifier = ">=1.26.0" },
     { name = "onnxscript", specifier = ">=0.7.0" },
+    { name = "pesq", specifier = ">=0.0.4" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pyptx", specifier = ">=0.1.1" },
     { name = "safetensors", specifier = ">=0.8.0" },
@@ -829,6 +831,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/d7/f1/e7a6dd94a8d4a5626
 wheels = [
     { url = "https://files.pythonhosted.org/packages/df/b2/87e62e8c3e2f4b32e5fe99e0b86d576da1312593b39f47d8ceef365e95ed/packaging-26.2-py3-none-any.whl", hash = "sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e", size = 100195, upload-time = "2026-04-24T20:15:22.081Z" },
 ]
+
+[[package]]
+name = "pesq"
+version = "0.0.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/22/e6/f8bdcef3238ac10fb3ce37d150e9b03a152d971febd681f088c6e5e17d8e/pesq-0.0.4.tar.gz", hash = "sha256:b724b28f73fb638522982bd68e8c3c0957e2f45210639a460233b17aa7fc890b", size = 38702, upload-time = "2022-05-17T14:15:26.301Z" }
 
 [[package]]
 name = "pillow"

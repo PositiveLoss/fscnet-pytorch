@@ -15,6 +15,7 @@ import json
 import math
 import os
 from pathlib import Path
+import time
 from types import ModuleType, SimpleNamespace
 from typing import Any, Iterable, Literal, Sequence, cast
 
@@ -676,6 +677,12 @@ def main(
         "--trackio_log_every",
         help="log training metrics every N optimizer steps; <=0 disables step logs",
     ),
+    train_log_every: int = option(
+        50,
+        "--train-log-every",
+        "--train_log_every",
+        help="print training metrics every N optimizer steps; <=0 disables console logs",
+    ),
     mrstft_weight: float = option(
         1.0, "--mrstft-weight", "--mrstft_weight", help="MR-STFT loss weight"
     ),
@@ -885,6 +892,13 @@ def main(
     )
     train_steps_per_epoch = args.steps_per_epoch or len(train_loader)
     total_steps = max(1, train_steps_per_epoch * args.epochs)
+    print(
+        "Training schedule: "
+        f"steps_per_epoch={train_steps_per_epoch}, "
+        f"total_steps={total_steps}, "
+        f"stream_train_manifest={args.stream_train_manifest}",
+        flush=True,
+    )
     scheduler_g = torch.optim.lr_scheduler.LambdaLR(
         optimizer_g,
         cosine_warmup_lambda(total_steps, args.warmup_steps, args.min_lr_ratio),
@@ -942,12 +956,15 @@ def main(
     printed_kernel_runtime = False
 
     for epoch in range(start_epoch, args.epochs):
+        epoch_started = time.perf_counter()
         pbar = tqdm(
             train_loader,
             desc=f"epoch {epoch + 1}/{args.epochs}",
             total=train_steps_per_epoch,
         )
-        for batch in islice(pbar, train_steps_per_epoch):
+        for step_in_epoch, batch in enumerate(
+            islice(pbar, train_steps_per_epoch), start=1
+        ):
             lr = batch["lr"].to(device, non_blocking=True)
             hr = batch["hr"].to(device, non_blocking=True)
 
@@ -1076,6 +1093,23 @@ def main(
             if not printed_kernel_runtime:
                 print_runtime_kernel_activations()
                 printed_kernel_runtime = True
+            if (
+                args.train_log_every > 0
+                and (global_step == 1 or global_step % args.train_log_every == 0)
+            ):
+                elapsed = max(1e-6, time.perf_counter() - epoch_started)
+                print(
+                    "train "
+                    f"epoch={epoch + 1}/{args.epochs} "
+                    f"step={step_in_epoch}/{train_steps_per_epoch} "
+                    f"global_step={global_step} "
+                    f"recon={scalar_float(logs['recon_loss']):.4f} "
+                    f"g={float(loss_g.detach().cpu()):.4f} "
+                    f"d={d_loss_val:.4f} "
+                    f"lr={scalar_float(scheduler_g.get_last_lr()[0]):.2e} "
+                    f"steps_per_sec={step_in_epoch / elapsed:.3f}",
+                    flush=True,
+                )
             if (
                 valid_loader is not None
                 and args.eval_steps > 0

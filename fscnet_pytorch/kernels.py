@@ -404,3 +404,261 @@ def _global_layer_norm_kernel(
         ptx.ret()
 
     return global_layer_norm
+
+
+def fused_rope_qk_norm_pyptx(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    *,
+    eps: float = 1.0e-12,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    """Apply RoPE and QK normalization to [Bf,H,T,D] q/k tensors."""
+
+    if os.environ.get("FSCNET_ENABLE_PYPTX_ROPE_QK") != "1":
+        return None
+    if not _can_use_rope_qk_norm_kernel(q, k):
+        return None
+    try:
+        frames = q.shape[-2]
+        half = q.shape[-1] // 2
+        pos = torch.arange(frames, device=q.device, dtype=torch.float32)
+        freq = torch.arange(half, device=q.device, dtype=torch.float32)
+        inv_freq = 1.0 / (10_000 ** (freq / float(half)))
+        angles = pos[:, None] * inv_freq[None, :]
+        sin = angles.sin().to(dtype=q.dtype).contiguous()
+        cos = angles.cos().to(dtype=q.dtype).contiguous()
+        return _RoPEQKNormFn.apply(
+            q.contiguous(), k.contiguous(), sin, cos, float(eps)
+        )
+    except Exception:
+        return None
+
+
+def _can_use_rope_qk_norm_kernel(q: torch.Tensor, k: torch.Tensor) -> bool:
+    return (
+        q.is_cuda
+        and k.is_cuda
+        and q.dtype == torch.float32
+        and k.dtype == torch.float32
+        and q.ndim == 4
+        and k.shape == q.shape
+        and q.shape[-1] % 2 == 0
+        and q.shape[-1] <= 32
+    )
+
+
+class _RoPEQKNormFn(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx: Any,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        sin: torch.Tensor,
+        cos: torch.Tensor,
+        eps: float,
+    ) -> Any:
+        rows, heads, frames, dim_head = q.shape
+        kernel = _rope_qk_norm_kernel(rows, heads, frames, dim_head, float(eps))
+        q_out, k_out = kernel(q, k, sin, cos)
+        ctx.save_for_backward(q, k)
+        ctx.eps = eps
+        return q_out, k_out
+
+    @staticmethod
+    def backward(ctx: Any, *grad_outputs: Any) -> Any:
+        grad_q_out, grad_k_out = grad_outputs
+        q, k = ctx.saved_tensors
+        eps = float(ctx.eps)
+        scale = q.shape[-1] ** 0.5
+        grad_q = _rope_qk_norm_backward(q, grad_q_out, scale, eps)
+        grad_k = _rope_qk_norm_backward(k, grad_k_out, scale, eps)
+        return grad_q, grad_k, None, None, None
+
+
+def _rope_qk_norm_backward(
+    x: torch.Tensor, grad_out: torch.Tensor, scale: float, eps: float
+) -> torch.Tensor:
+    z = _apply_rope_torch(x)
+    norm = z.norm(dim=-1, keepdim=True).clamp_min(eps)
+    grad_z = scale * (
+        grad_out / norm - z * (grad_out * z).sum(dim=-1, keepdim=True) / norm.pow(3)
+    )
+    return _apply_inverse_rope_torch(grad_z)
+
+
+def _apply_rope_torch(x: torch.Tensor) -> torch.Tensor:
+    frames = x.shape[-2]
+    dim_head = x.shape[-1]
+    half = dim_head // 2
+    pos = torch.arange(frames, device=x.device, dtype=torch.float32)
+    freq = torch.arange(half, device=x.device, dtype=torch.float32)
+    inv_freq = 1.0 / (10_000 ** (freq / float(half)))
+    angles = pos[:, None] * inv_freq[None, :]
+    sin = angles.sin().to(dtype=x.dtype).view(1, 1, frames, half)
+    cos = angles.cos().to(dtype=x.dtype).view(1, 1, frames, half)
+    x1, x2 = x[..., :half], x[..., half:]
+    return torch.cat((x1 * cos - x2 * sin, x1 * sin + x2 * cos), dim=-1)
+
+
+def _apply_inverse_rope_torch(x: torch.Tensor) -> torch.Tensor:
+    frames = x.shape[-2]
+    dim_head = x.shape[-1]
+    half = dim_head // 2
+    pos = torch.arange(frames, device=x.device, dtype=torch.float32)
+    freq = torch.arange(half, device=x.device, dtype=torch.float32)
+    inv_freq = 1.0 / (10_000 ** (freq / float(half)))
+    angles = pos[:, None] * inv_freq[None, :]
+    sin = angles.sin().to(dtype=x.dtype).view(1, 1, frames, half)
+    cos = angles.cos().to(dtype=x.dtype).view(1, 1, frames, half)
+    x1, x2 = x[..., :half], x[..., half:]
+    return torch.cat((x1 * cos + x2 * sin, -x1 * sin + x2 * cos), dim=-1)
+
+
+@lru_cache(maxsize=64)
+def _rope_qk_norm_kernel(
+    rows: int, heads: int, frames: int, dim_head: int, eps: float
+):
+    from pyptx import Tile, kernel, ptx, reg, smem
+    from pyptx.types import f32, u32
+
+    block = 32
+    half = dim_head // 2
+    vectors = rows * heads * frames
+    scale = dim_head**0.5
+    arch = _arch()
+    version = (8, 7) if arch.startswith("sm_100") else None
+
+    @kernel(
+        in_specs=(
+            Tile(rows, heads, frames, dim_head, f32),
+            Tile(rows, heads, frames, dim_head, f32),
+            Tile(frames, half, f32),
+            Tile(frames, half, f32),
+        ),
+        out_specs=(
+            Tile(rows, heads, frames, dim_head, f32),
+            Tile(rows, heads, frames, dim_head, f32),
+        ),
+        grid=(vectors, 1, 1),
+        block=(block, 1, 1),
+        arch=arch,
+        version=version,
+    )
+    def rope_qk_norm(q, k, sin_table, cos_table, q_out, k_out):
+        stats = smem.alloc(f32, (2, 1))
+        pq, pk, psin, pcos, pqo, pko = ptx.global_ptrs(
+            q, k, sin_table, cos_table, q_out, k_out
+        )
+
+        tid = reg.scalar(u32)
+        ptx.inst.mov.u32(tid, ptx.special.tid.x())
+        vector = reg.scalar(u32)
+        ptx.inst.mov.u32(vector, ptx.special.ctaid.x())
+
+        tmp = reg.scalar(u32)
+        ptx.inst.div.u32(tmp, vector, frames)
+        frame_mul = reg.scalar(u32)
+        ptx.inst.mul.lo.u32(frame_mul, tmp, frames)
+        frame = reg.scalar(u32)
+        ptx.inst.sub.u32(frame, vector, frame_mul)
+
+        head_base = reg.scalar(u32)
+        ptx.inst.div.u32(head_base, tmp, heads)
+        head_mul = reg.scalar(u32)
+        ptx.inst.mul.lo.u32(head_mul, head_base, heads)
+        head = reg.scalar(u32)
+        ptx.inst.sub.u32(head, tmp, head_mul)
+        row = head_base
+
+        vec_base = (((row * heads + head) * frames + frame) * dim_head)
+        pair_idx = tid
+
+        sin_val = reg.scalar(f32)
+        cos_val = reg.scalar(f32)
+
+        q_a = reg.scalar(f32, init=0.0)
+        q_b = reg.scalar(f32, init=0.0)
+        k_a = reg.scalar(f32, init=0.0)
+        k_b = reg.scalar(f32, init=0.0)
+        q_norm_sum = reg.scalar(f32, init=0.0)
+        k_norm_sum = reg.scalar(f32, init=0.0)
+
+        with ptx.if_(tid < half):
+            trig_idx = frame * half + pair_idx
+            ptx.inst.ld.global_.f32(sin_val, ptx.addr(psin + trig_idx * 4))
+            ptx.inst.ld.global_.f32(cos_val, ptx.addr(pcos + trig_idx * 4))
+            low_idx = pair_idx
+            high_idx = pair_idx + half
+            q_low = reg.scalar(f32)
+            q_high = reg.scalar(f32)
+            k_low = reg.scalar(f32)
+            k_high = reg.scalar(f32)
+            ptx.inst.ld.global_.f32(q_low, ptx.addr(pq + (vec_base + low_idx) * 4))
+            ptx.inst.ld.global_.f32(q_high, ptx.addr(pq + (vec_base + high_idx) * 4))
+            ptx.inst.ld.global_.f32(k_low, ptx.addr(pk + (vec_base + low_idx) * 4))
+            ptx.inst.ld.global_.f32(k_high, ptx.addr(pk + (vec_base + high_idx) * 4))
+
+            neg_sin = reg.scalar(f32, init=0.0)
+            ptx.inst.sub.f32(neg_sin, neg_sin, sin_val)
+            ptx.inst.mul.f32(q_a, q_low, cos_val)
+            ptx.inst.fma.rn.f32(q_a, q_high, neg_sin, q_a)
+            ptx.inst.mul.f32(q_b, q_low, sin_val)
+            ptx.inst.fma.rn.f32(q_b, q_high, cos_val, q_b)
+            ptx.inst.mul.f32(k_a, k_low, cos_val)
+            ptx.inst.fma.rn.f32(k_a, k_high, neg_sin, k_a)
+            ptx.inst.mul.f32(k_b, k_low, sin_val)
+            ptx.inst.fma.rn.f32(k_b, k_high, cos_val, k_b)
+
+            ptx.inst.fma.rn.f32(q_norm_sum, q_a, q_a, q_norm_sum)
+            ptx.inst.fma.rn.f32(q_norm_sum, q_b, q_b, q_norm_sum)
+            ptx.inst.fma.rn.f32(k_norm_sum, k_a, k_a, k_norm_sum)
+            ptx.inst.fma.rn.f32(k_norm_sum, k_b, k_b, k_norm_sum)
+
+        ptx.warp.reduce_sum(q_norm_sum)
+        ptx.warp.reduce_sum(k_norm_sum)
+
+        with ptx.if_(tid == 0):
+            eps_sq_reg = reg.scalar(f32, init=eps * eps)
+            ptx.inst.max.f32(q_norm_sum, q_norm_sum, eps_sq_reg)
+            ptx.inst.max.f32(k_norm_sum, k_norm_sum, eps_sq_reg)
+            q_rnorm = reg.scalar(f32)
+            k_rnorm = reg.scalar(f32)
+            ptx.inst.rsqrt.approx.f32(q_rnorm, q_norm_sum)
+            ptx.inst.rsqrt.approx.f32(k_rnorm, k_norm_sum)
+            stats[0, 0] = q_rnorm
+            stats[1, 0] = k_rnorm
+        ptx.bar.sync(0)
+
+        q_rnorm = reg.scalar(f32)
+        k_rnorm = reg.scalar(f32)
+        ptx.inst.mov.f32(q_rnorm, stats[0, 0])
+        ptx.inst.mov.f32(k_rnorm, stats[1, 0])
+        scale_reg = reg.scalar(f32, init=scale)
+
+        with ptx.if_(tid < half):
+            low_idx = pair_idx
+            high_idx = pair_idx + half
+            out_q_low = reg.scalar(f32)
+            out_q_high = reg.scalar(f32)
+            out_k_low = reg.scalar(f32)
+            out_k_high = reg.scalar(f32)
+            ptx.inst.mul.f32(out_q_low, q_a, q_rnorm)
+            ptx.inst.mul.f32(out_q_low, out_q_low, scale_reg)
+            ptx.inst.mul.f32(out_q_high, q_b, q_rnorm)
+            ptx.inst.mul.f32(out_q_high, out_q_high, scale_reg)
+            ptx.inst.mul.f32(out_k_low, k_a, k_rnorm)
+            ptx.inst.mul.f32(out_k_low, out_k_low, scale_reg)
+            ptx.inst.mul.f32(out_k_high, k_b, k_rnorm)
+            ptx.inst.mul.f32(out_k_high, out_k_high, scale_reg)
+            ptx.inst.st.global_.f32(ptx.addr(pqo + (vec_base + low_idx) * 4), out_q_low)
+            ptx.inst.st.global_.f32(
+                ptx.addr(pqo + (vec_base + high_idx) * 4), out_q_high
+            )
+            ptx.inst.st.global_.f32(ptx.addr(pko + (vec_base + low_idx) * 4), out_k_low)
+            ptx.inst.st.global_.f32(
+                ptx.addr(pko + (vec_base + high_idx) * 4), out_k_high
+            )
+
+        ptx.ret()
+
+    return rope_qk_norm

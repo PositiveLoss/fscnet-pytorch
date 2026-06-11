@@ -19,7 +19,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from .audio import complex_to_ri, istft_complex, ri_to_complex, stft_complex
-from .kernels import fused_global_layer_norm_pyptx
+from .kernels import fused_global_layer_norm_pyptx, fused_rope_qk_norm_pyptx
 from .validation import validate_fscnet_config_data
 
 
@@ -329,10 +329,20 @@ class TimeSelfAttentionV2(nn.Module):
         k = k.permute(0, 2, 1, 3)
         v = v.permute(0, 2, 1, 3)
 
-        if self.rope:
+        if self.rope and self.qk_norm:
+            fused_qk = fused_rope_qk_norm_pyptx(q, k)
+            if fused_qk is not None:
+                q, k = fused_qk
+            else:
+                q = self._apply_rope(q)
+                k = self._apply_rope(k)
+                scale = self.dim_head**0.5
+                q = F.normalize(q, dim=-1) * scale
+                k = F.normalize(k, dim=-1) * scale
+        elif self.rope:
             q = self._apply_rope(q)
             k = self._apply_rope(k)
-        if self.qk_norm:
+        elif self.qk_norm:
             scale = self.dim_head**0.5
             q = F.normalize(q, dim=-1) * scale
             k = F.normalize(k, dim=-1) * scale

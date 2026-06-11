@@ -435,7 +435,7 @@ def save_checkpoint(
     unwrapped_model = cast(FSCNet, unwrap_module(model))
     save_training_checkpoint(
         path,
-        model=model,
+        model=unwrapped_model,
         config=unwrapped_model.cfg.to_dict(),
         windows=tuple(windows),
         epoch=epoch,
@@ -1310,7 +1310,7 @@ def main(
                 and args.eval_steps > 0
                 and global_step % args.eval_steps == 0
             )
-            if should_validate_step and dist_ctx.is_main:
+            if should_validate_step and dist_ctx.is_main and valid_loader is not None:
                 best_valid_recon_loss = run_validation(
                     model=model,
                     recon_loss_fn=recon_loss_fn,
@@ -1341,7 +1341,7 @@ def main(
             and args.eval_steps <= 0
             and (epoch + 1) % args.valid_every == 0
         )
-        if should_validate_epoch and dist_ctx.is_main:
+        if should_validate_epoch and dist_ctx.is_main and valid_loader is not None:
             best_valid_recon_loss = run_validation(
                 model=model,
                 recon_loss_fn=recon_loss_fn,

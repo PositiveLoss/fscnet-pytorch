@@ -720,7 +720,7 @@ def main(
         5.0, "--lsd-weight", "--lsd_weight", help="LSD loss weight"
     ),
     complex_l1_weight: float = option(
-        1.0, "--complex-l1-weight", "--complex_l1_weight", help="complex L1 loss weight"
+        0.0, "--complex-l1-weight", "--complex_l1_weight", help="complex L1 loss weight"
     ),
     mrstft_fft_sizes: str = option(
         "512,1024,2048",

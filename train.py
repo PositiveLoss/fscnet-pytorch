@@ -163,19 +163,20 @@ def print_kernel_configuration(
     device: torch.device,
     precision_name: str,
 ) -> None:
-    progressive = "auto" if device.type == "cuda" and precision_name == "fp32" else "inactive"
+    kernel_precision = precision_name in ("fp32", "bf16")
+    progressive = "auto" if device.type == "cuda" and kernel_precision else "inactive"
     norm = (
         "enabled"
         if os.environ.get("FSCNET_ENABLE_PYPTX_NORM") == "1"
         and device.type == "cuda"
-        and precision_name == "fp32"
+        and kernel_precision
         else "inactive"
     )
     rope_qk = (
         "enabled"
         if os.environ.get("FSCNET_ENABLE_PYPTX_ROPE_QK") == "1"
         and device.type == "cuda"
-        and precision_name == "fp32"
+        and kernel_precision
         and args.time_attention == "v2"
         and args.time_attention_qk_norm
         and args.time_attention_rope

@@ -4,3 +4,4 @@ runs/
 
 test.wav
 test_upsampled.wav
+fscnet-8khz-to-16khz/

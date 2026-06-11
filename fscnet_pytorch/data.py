@@ -212,6 +212,8 @@ class StreamingBandwidthExtensionDataset(IterableDataset):
         random_crop: bool = True,
         shuffle_buffer_size: int = 8192,
         row_count: int | None = None,
+        shard_rank: int = 0,
+        shard_world_size: int = 1,
     ) -> None:
         self.manifest = Path(manifest)
         self.target_sr = target_sr
@@ -221,20 +223,28 @@ class StreamingBandwidthExtensionDataset(IterableDataset):
         self.random_crop = random_crop
         self.shuffle_buffer_size = shuffle_buffer_size
         self.row_count = row_count
+        self.shard_rank = shard_rank
+        self.shard_world_size = shard_world_size
 
     def __len__(self) -> int:
         if self.row_count is None:
             raise TypeError("Streaming dataset length is unknown")
-        return self.row_count
+        return max(
+            0,
+            (self.row_count + self.shard_world_size - 1 - self.shard_rank)
+            // self.shard_world_size,
+        )
 
     def __iter__(self) -> Iterator[Dict[str, torch.Tensor]]:
         worker = get_worker_info()
         worker_id = worker.id if worker is not None else 0
         num_workers = worker.num_workers if worker is not None else 1
+        total_shards = self.shard_world_size * num_workers
+        shard_id = self.shard_rank * num_workers + worker_id
 
         def rows() -> Iterator[Dict[str, str]]:
             for index, item in enumerate(iter_manifest(self.manifest)):
-                if index % num_workers == worker_id:
+                if index % total_shards == shard_id:
                     yield item
 
         for item in _shuffle_buffered(rows(), self.shuffle_buffer_size):

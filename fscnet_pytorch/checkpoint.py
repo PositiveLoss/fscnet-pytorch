@@ -103,7 +103,15 @@ def _add_state_tensors(
     tensors: dict[str, torch.Tensor], prefix: str, state: dict[str, torch.Tensor]
 ) -> None:
     for name, tensor in state.items():
-        tensors[f"{prefix}.{name}"] = tensor.detach().cpu().contiguous()
+        tensors[f"{prefix}.{_unwrap_ddp_state_key(name)}"] = (
+            tensor.detach().cpu().contiguous()
+        )
+
+
+def _unwrap_ddp_state_key(key: str) -> str:
+    if key.startswith("module."):
+        key = key[len("module.") :]
+    return key.replace(".module.", ".")
 
 
 def _prefixed_state_dict(

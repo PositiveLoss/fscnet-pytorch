@@ -20,9 +20,11 @@ from types import ModuleType, SimpleNamespace
 from typing import Any, Iterable, Iterator, Literal, Sequence, cast
 
 import torch
+import torch.distributed as dist
 from torch import nn
 from torch.amp import GradScaler
-from torch.utils.data import DataLoader
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
 
 from fscnet_pytorch.audio import complex_to_ri, resample_audio, stft_complex
@@ -79,6 +81,53 @@ TrackMetricValue = int | float | str | bool | None
 TimeAttention = Literal["v1", "v2"]
 PrecisionMode = Literal["fp32", "fp16", "bf16"]
 OptionalMetricState = dict[str, Any]
+
+
+def init_distributed() -> SimpleNamespace:
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    rank = int(os.environ.get("RANK", "0"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    distributed = world_size > 1
+    if distributed and not dist.is_initialized():
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
+        if backend == "nccl":
+            torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend=backend, init_method="env://")
+    return SimpleNamespace(
+        distributed=distributed,
+        rank=rank,
+        local_rank=local_rank,
+        world_size=world_size,
+        is_main=(rank == 0),
+    )
+
+
+def cleanup_distributed(distributed: bool) -> None:
+    if distributed and dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def distributed_barrier(distributed: bool) -> None:
+    if distributed and dist.is_initialized():
+        dist.barrier()
+
+
+def unwrap_module(module: nn.Module) -> nn.Module:
+    if isinstance(module, DDP):
+        return cast(nn.Module, module.module)
+    return module
+
+
+def wrap_ddp(module: nn.Module, dist_ctx: SimpleNamespace) -> nn.Module:
+    if not dist_ctx.distributed:
+        return module
+    if torch.cuda.is_available():
+        return DDP(
+            module,
+            device_ids=[dist_ctx.local_rank],
+            output_device=dist_ctx.local_rank,
+        )
+    return DDP(module)
 
 
 class TrackioRun:
@@ -372,7 +421,7 @@ def resolve_precision(
 
 def save_checkpoint(
     path: Path,
-    model: FSCNet,
+    model: nn.Module,
     optimizer_g: torch.optim.Optimizer,
     scheduler_g,
     epoch: int,
@@ -383,10 +432,11 @@ def save_checkpoint(
     optimizer_d: torch.optim.Optimizer | None = None,
     scheduler_d=None,
 ) -> None:
+    unwrapped_model = cast(FSCNet, unwrap_module(model))
     save_training_checkpoint(
         path,
         model=model,
-        config=model.cfg.to_dict(),
+        config=unwrapped_model.cfg.to_dict(),
         windows=tuple(windows),
         epoch=epoch,
         step=step,
@@ -476,7 +526,7 @@ def validate(
 
 def run_validation(
     *,
-    model: FSCNet,
+    model: nn.Module,
     recon_loss_fn: StageReconstructionLoss,
     valid_loader: DataLoader,
     device: torch.device,
@@ -498,13 +548,14 @@ def run_validation(
     scheduler_d=None,
 ) -> float:
     started = time.perf_counter()
+    eval_model = cast(FSCNet, unwrap_module(model))
     print(
         f"validation start step={global_step} epoch={epoch + 1} "
         f"batches={len(valid_loader)}",
         flush=True,
     )
     metrics = validate(
-        model,
+        eval_model,
         recon_loss_fn,
         valid_loader,
         device,
@@ -821,12 +872,17 @@ def main(
             "--train_manifest is required unless --list_model_sizes is used"
         )
 
+    dist_ctx = init_distributed()
     if args.torch_num_threads and args.torch_num_threads > 0:
         torch.set_num_threads(args.torch_num_threads)
-    torch.manual_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.manual_seed(args.seed + dist_ctx.rank)
+    device = torch.device(
+        f"cuda:{dist_ctx.local_rank}" if torch.cuda.is_available() else "cpu"
+    )
     out_path = Path(args.out_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
+    if dist_ctx.is_main:
+        out_path.mkdir(parents=True, exist_ok=True)
+    distributed_barrier(dist_ctx.distributed)
 
     overrides = {field: getattr(args, field) for field in MODEL_OVERRIDE_FIELDS}
     cfg, windows = resolve_model_config(
@@ -846,14 +902,30 @@ def main(
     )
     args.precision = precision_name
     reset_activated_kernel_names()
-    print_kernel_configuration(args, device, precision_name)
+    if dist_ctx.is_main:
+        print_kernel_configuration(args, device, precision_name)
     parsed_mrstft_fft_sizes = tuple(
         int(x) for x in args.mrstft_fft_sizes.split(",") if x
     )
     model = FSCNet(cfg).to(device)
     parameter_count = count_parameters(model)
-    print(f"Model preset: {args.model_size}; windows={windows}; config={cfg.to_dict()}")
-    print(f"Generator parameters: {parameter_count / 1e6:.3f} M")
+    if dist_ctx.is_main:
+        if dist_ctx.distributed:
+            print(
+                "Distributed training: "
+                f"world_size={dist_ctx.world_size} rank={dist_ctx.rank} "
+                f"local_rank={dist_ctx.local_rank} device={device}"
+            )
+        print(
+            f"Model preset: {args.model_size}; windows={windows}; config={cfg.to_dict()}"
+        )
+        print(f"Generator parameters: {parameter_count / 1e6:.3f} M")
+
+    resume_checkpoint = resolve_checkpoint_to_resume(args, out_path)
+    ckpt: dict[str, Any] | None = None
+    if resume_checkpoint is not None:
+        ckpt = load_training_checkpoint(resume_checkpoint)
+        model.load_state_dict(ckpt["model"])
 
     if args.stream_train_manifest:
         train_row_count = (
@@ -872,6 +944,8 @@ def main(
             random_crop=True,
             shuffle_buffer_size=args.train_shuffle_buffer,
             row_count=train_row_count,
+            shard_rank=dist_ctx.rank,
+            shard_world_size=dist_ctx.world_size,
         )
     else:
         train_ds = BandwidthExtensionDataset(
@@ -882,10 +956,22 @@ def main(
             normalize=True,
             random_crop=True,
         )
+    train_sampler = (
+        DistributedSampler(
+            train_ds,
+            num_replicas=dist_ctx.world_size,
+            rank=dist_ctx.rank,
+            shuffle=True,
+            drop_last=True,
+        )
+        if dist_ctx.distributed and not args.stream_train_manifest
+        else None
+    )
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch_size,
-        shuffle=not args.stream_train_manifest,
+        shuffle=train_sampler is None and not args.stream_train_manifest,
+        sampler=train_sampler,
         drop_last=True,
         num_workers=args.num_workers,
         pin_memory=(device.type == "cuda"),
@@ -920,21 +1006,32 @@ def main(
     if args.adv_weight > 0:
         discriminators = nn.ModuleList(
             [
-                MultiScaleDiscriminator(
-                    waveform_channels=1,
-                    spec_channels=2,
-                    num_scales=args.disc_scales,
-                    base_channels=args.disc_channels,
+                cast(
+                    MultiScaleDiscriminator,
+                    MultiScaleDiscriminator(
+                        waveform_channels=1,
+                        spec_channels=2,
+                        num_scales=args.disc_scales,
+                        base_channels=args.disc_channels,
+                    ).to(device),
                 )
                 for _ in windows
             ]
-        ).to(device)
+        )
+        if ckpt is not None and ckpt.get("discriminators"):
+            discriminators.load_state_dict(ckpt["discriminators"])
+        if dist_ctx.distributed:
+            discriminators = nn.ModuleList(
+                [wrap_ddp(cast(nn.Module, disc), dist_ctx) for disc in discriminators]
+            )
         optimizer_d = torch.optim.AdamW(
             discriminators.parameters(),
             lr=args.lr_d,
             betas=(0.8, 0.99),
             weight_decay=1e-4,
         )
+
+    model = wrap_ddp(model, dist_ctx)
 
     optimizer_g = torch.optim.AdamW(
         model.parameters(), lr=args.lr_g, betas=(0.8, 0.99), weight_decay=1e-4
@@ -952,18 +1049,17 @@ def main(
                     "--steps_per_epoch, or omit it."
                 )
         train_steps_per_epoch = args.steps_per_epoch
-    cycle_train_loader = (
-        args.stream_train_manifest and args.steps_per_epoch is not None
-    )
+    cycle_train_loader = args.stream_train_manifest and args.steps_per_epoch is not None
     total_steps = max(1, train_steps_per_epoch * args.epochs)
-    print(
-        "Training schedule: "
-        f"steps_per_epoch={train_steps_per_epoch}, "
-        f"total_steps={total_steps}, "
-        f"stream_train_manifest={args.stream_train_manifest}, "
-        f"cycle_train_loader={cycle_train_loader}",
-        flush=True,
-    )
+    if dist_ctx.is_main:
+        print(
+            "Training schedule: "
+            f"steps_per_epoch={train_steps_per_epoch}, "
+            f"total_steps={total_steps}, "
+            f"stream_train_manifest={args.stream_train_manifest}, "
+            f"cycle_train_loader={cycle_train_loader}",
+            flush=True,
+        )
     scheduler_g = torch.optim.lr_scheduler.LambdaLR(
         optimizer_g,
         cosine_warmup_lambda(total_steps, args.warmup_steps, args.min_lr_ratio),
@@ -976,43 +1072,46 @@ def main(
 
     start_epoch = 0
     global_step = 0
-    resume_checkpoint = resolve_checkpoint_to_resume(args, out_path)
-    if resume_checkpoint is not None:
-        ckpt = load_training_checkpoint(resume_checkpoint)
-        model.load_state_dict(ckpt["model"])
+    if ckpt is not None:
         optimizer_g.load_state_dict(ckpt["optimizer_g"])
         if ckpt.get("scheduler_g"):
             scheduler_g.load_state_dict(ckpt["scheduler_g"])
-        if discriminators is not None and ckpt.get("discriminators"):
-            discriminators.load_state_dict(ckpt["discriminators"])
         if optimizer_d is not None and ckpt.get("optimizer_d"):
             optimizer_d.load_state_dict(ckpt["optimizer_d"])
         if scheduler_d is not None and ckpt.get("scheduler_d"):
             scheduler_d.load_state_dict(ckpt["scheduler_d"])
         start_epoch = int(ckpt.get("epoch", 0)) + 1
         global_step = int(ckpt.get("step", 0))
-        print(
-            f"Resumed from {resume_checkpoint} at epoch {start_epoch + 1} "
-            f"with global_step={global_step}"
-        )
+        if dist_ctx.is_main:
+            print(
+                f"Resumed from {resume_checkpoint} at epoch {start_epoch + 1} "
+                f"with global_step={global_step}"
+            )
 
-    (out_path / "config.json").write_text(
-        json.dumps(
-            {"model": cfg.to_dict(), "windows": windows, "args": vars(args)}, indent=2
-        ),
-        encoding="utf-8",
-    )
+    if dist_ctx.is_main:
+        (out_path / "config.json").write_text(
+            json.dumps(
+                {"model": cfg.to_dict(), "windows": windows, "args": vars(args)},
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    distributed_barrier(dist_ctx.distributed)
 
     scaler = GradScaler("cuda", enabled=scaler_enabled and device.type == "cuda")
     model.train()
-    tracker = init_trackio(args, cfg.to_dict(), windows, parameter_count)
+    tracker = (
+        init_trackio(args, cfg.to_dict(), windows, parameter_count)
+        if dist_ctx.is_main
+        else None
+    )
     optional_eval_metrics = init_optional_eval_metrics(
         args.eval_metrics and valid_loader is not None,
         cfg.target_sr,
     )
     best_valid_recon_loss = math.inf
     best_metrics_path = out_path / "best_metrics.json"
-    if args.save_best_checkpoint and best_metrics_path.exists():
+    if dist_ctx.is_main and args.save_best_checkpoint and best_metrics_path.exists():
         try:
             best_metrics = json.loads(best_metrics_path.read_text(encoding="utf-8"))
             best_valid_recon_loss = float(best_metrics["valid_recon_loss"])
@@ -1021,6 +1120,8 @@ def main(
     printed_kernel_runtime = False
 
     for epoch in range(start_epoch, args.epochs):
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
         epoch_started = time.perf_counter()
         data_started = time.perf_counter()
         if device.type == "cuda":
@@ -1032,6 +1133,7 @@ def main(
             train_epoch_loader,
             desc=f"epoch {epoch + 1}/{args.epochs}",
             total=train_steps_per_epoch,
+            disable=not dist_ctx.is_main,
         )
         for step_in_epoch, batch in enumerate(
             islice(pbar, train_steps_per_epoch), start=1
@@ -1148,7 +1250,8 @@ def main(
                 mem=gpu_memory_summary(device),
             )
             if (
-                tracker is not None
+                dist_ctx.is_main
+                and tracker is not None
                 and args.trackio_log_every > 0
                 and global_step % args.trackio_log_every == 0
             ):
@@ -1171,11 +1274,13 @@ def main(
                     if key != "recon_loss":
                         train_metrics[f"train/{key}"] = scalar_float(value)
                 tracker.log(train_metrics)
-            if not printed_kernel_runtime:
+            if dist_ctx.is_main and not printed_kernel_runtime:
                 print_runtime_kernel_activations()
                 printed_kernel_runtime = True
-            if args.train_log_every > 0 and (
-                global_step == 1 or global_step % args.train_log_every == 0
+            if (
+                dist_ctx.is_main
+                and args.train_log_every > 0
+                and (global_step == 1 or global_step % args.train_log_every == 0)
             ):
                 stage_losses = train_stage_loss_summary(logs)
                 print(
@@ -1200,11 +1305,12 @@ def main(
                     flush=True,
                 )
             data_started = time.perf_counter()
-            if (
+            should_validate_step = (
                 valid_loader is not None
                 and args.eval_steps > 0
                 and global_step % args.eval_steps == 0
-            ):
+            )
+            if should_validate_step and dist_ctx.is_main:
                 best_valid_recon_loss = run_validation(
                     model=model,
                     recon_loss_fn=recon_loss_fn,
@@ -1227,12 +1333,15 @@ def main(
                     optimizer_d=optimizer_d,
                     scheduler_d=scheduler_d,
                 )
+            if should_validate_step:
+                distributed_barrier(dist_ctx.distributed)
 
-        if (
+        should_validate_epoch = (
             valid_loader is not None
             and args.eval_steps <= 0
             and (epoch + 1) % args.valid_every == 0
-        ):
+        )
+        if should_validate_epoch and dist_ctx.is_main:
             best_valid_recon_loss = run_validation(
                 model=model,
                 recon_loss_fn=recon_loss_fn,
@@ -1255,46 +1364,51 @@ def main(
                 optimizer_d=optimizer_d,
                 scheduler_d=scheduler_d,
             )
+        if should_validate_epoch:
+            distributed_barrier(dist_ctx.distributed)
 
         if (epoch + 1) % args.save_every == 0:
-            save_checkpoint(
-                out_path / f"checkpoint_epoch_{epoch + 1:04d}.safetensors",
-                model,
-                optimizer_g,
-                scheduler_g,
-                epoch,
-                global_step,
-                args,
-                windows,
-                discriminators=discriminators,
-                optimizer_d=optimizer_d,
-                scheduler_d=scheduler_d,
-            )
-            prune_numbered_checkpoints(out_path, args.keep_n_checkpoints)
-            save_checkpoint(
-                out_path / "last.safetensors",
-                model,
-                optimizer_g,
-                scheduler_g,
-                epoch,
-                global_step,
-                args,
-                windows,
-                discriminators=discriminators,
-                optimizer_d=optimizer_d,
-                scheduler_d=scheduler_d,
-            )
-            if tracker is not None:
-                tracker.log(
-                    {
-                        "step": global_step,
-                        "epoch": epoch + 1,
-                        "checkpoint/epoch": epoch + 1,
-                        "checkpoint/global_step": global_step,
-                    }
+            if dist_ctx.is_main:
+                save_checkpoint(
+                    out_path / f"checkpoint_epoch_{epoch + 1:04d}.safetensors",
+                    model,
+                    optimizer_g,
+                    scheduler_g,
+                    epoch,
+                    global_step,
+                    args,
+                    windows,
+                    discriminators=discriminators,
+                    optimizer_d=optimizer_d,
+                    scheduler_d=scheduler_d,
                 )
+                prune_numbered_checkpoints(out_path, args.keep_n_checkpoints)
+                save_checkpoint(
+                    out_path / "last.safetensors",
+                    model,
+                    optimizer_g,
+                    scheduler_g,
+                    epoch,
+                    global_step,
+                    args,
+                    windows,
+                    discriminators=discriminators,
+                    optimizer_d=optimizer_d,
+                    scheduler_d=scheduler_d,
+                )
+                if tracker is not None:
+                    tracker.log(
+                        {
+                            "step": global_step,
+                            "epoch": epoch + 1,
+                            "checkpoint/epoch": epoch + 1,
+                            "checkpoint/global_step": global_step,
+                        }
+                    )
+            distributed_barrier(dist_ctx.distributed)
     if tracker is not None:
         tracker.finish()
+    cleanup_distributed(dist_ctx.distributed)
 
 
 if __name__ == "__main__":

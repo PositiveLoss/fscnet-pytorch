@@ -160,6 +160,22 @@ Training auto-resumes from `OUT_DIR/last.safetensors` when it exists; pass
 `--no-auto-resume` to force a fresh run or `--resume PATH` to choose a specific
 checkpoint.
 
+Distributed data-parallel training is launched with `torchrun`; the existing
+training flags stay the same and `--batch_size` is the per-process batch size:
+
+```bash
+uv run torchrun --standalone --nproc_per_node=4 train.py \
+  --train_manifest train.txt \
+  --valid_manifest valid.txt \
+  --out_dir runs/fscnet_4gpu \
+  --model_size compact \
+  --precision fp16
+```
+
+Only rank 0 writes checkpoints and validation metrics. Non-streaming manifests
+use `DistributedSampler`; streaming manifests are sharded across ranks and
+DataLoader workers.
+
 Validation runs after each epoch by default when `--valid_manifest` is set.
 Use `--eval-steps N` to validate every N optimizer steps instead of waiting
 for epoch-end validation.

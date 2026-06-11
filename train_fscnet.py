@@ -22,6 +22,11 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from fscnet_pytorch.audio import complex_to_ri, stft_complex
+from fscnet_pytorch.config import (
+    get_model_preset,
+    model_preset_names,
+    resolve_model_config,
+)
 from fscnet_pytorch.data import BandwidthExtensionDataset
 from fscnet_pytorch.discriminator import (
     MultiScaleDiscriminator,
@@ -30,18 +35,26 @@ from fscnet_pytorch.discriminator import (
     set_requires_grad,
 )
 from fscnet_pytorch.losses import StageLossWeights, StageReconstructionLoss
-from fscnet_pytorch.model import FSCNet, FSCNetConfig, count_parameters
+from fscnet_pytorch.model import FSCNet, count_parameters
 
 
-def parse_windows(text: str, num_blocks: int | None = None) -> tuple[int, ...]:
-    vals = tuple(int(x.strip()) for x in text.split(",") if x.strip())
-    if not vals:
-        raise ValueError("At least one progressive window is required")
-    if num_blocks is not None and len(vals) != num_blocks:
-        raise ValueError(
-            f"Need one window per block: got {len(vals)} windows for {num_blocks} blocks"
-        )
-    return vals
+MODEL_OVERRIDE_FIELDS = (
+    "target_sr",
+    "input_sr",
+    "n_fft",
+    "win_length",
+    "hop_length",
+    "subbands",
+    "channels",
+    "num_blocks",
+    "rnn_hidden",
+    "attention_heads",
+    "time_attention",
+    "time_attention_qk_norm",
+    "time_attention_rope",
+    "ffc_ratio",
+    "dropout",
+)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -50,44 +63,64 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--train_manifest",
-        required=True,
+        default=None,
         help="jsonl/csv/txt manifest for training audio",
     )
     p.add_argument(
         "--valid_manifest", default=None, help="optional validation manifest"
     )
     p.add_argument("--out_dir", default="runs/fscnet", help="checkpoint/log directory")
+    p.add_argument(
+        "--model_size",
+        choices=model_preset_names(),
+        default="compact",
+        help="model size preset; explicit architecture flags override it",
+    )
+    p.add_argument(
+        "--list_model_sizes",
+        action="store_true",
+        help="print available model size presets and exit",
+    )
 
-    p.add_argument("--target_sr", type=int, default=48_000)
-    p.add_argument("--input_sr", type=int, default=4_000)
+    p.add_argument("--target_sr", type=int, default=None)
+    p.add_argument("--input_sr", type=int, default=None)
     p.add_argument("--segment_seconds", type=float, default=2.0)
-    p.add_argument("--n_fft", type=int, default=1536)
-    p.add_argument("--win_length", type=int, default=1536)
-    p.add_argument("--hop_length", type=int, default=768)
-    p.add_argument("--subbands", type=int, default=3)
-    p.add_argument("--channels", type=int, default=48)
-    p.add_argument("--num_blocks", type=int, default=5)
-    p.add_argument("--rnn_hidden", type=int, default=64)
-    p.add_argument("--attention_heads", type=int, default=4)
-    p.add_argument("--time_attention", choices=("v1", "v2"), default="v1")
+    p.add_argument("--n_fft", type=int, default=None)
+    p.add_argument("--win_length", type=int, default=None)
+    p.add_argument("--hop_length", type=int, default=None)
+    p.add_argument("--subbands", type=int, default=None)
+    p.add_argument("--channels", type=int, default=None)
+    p.add_argument("--num_blocks", type=int, default=None)
+    p.add_argument("--rnn_hidden", type=int, default=None)
+    p.add_argument("--attention_heads", type=int, default=None)
+    p.add_argument("--time_attention", choices=("v1", "v2"), default=None)
     p.add_argument(
         "--time_attention_qk_norm",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=None,
         help="enable QK normalization for --time_attention v2",
     )
     p.add_argument(
         "--time_attention_rope",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=None,
         help="enable rotary time positions for --time_attention v2",
     )
-    p.add_argument("--ffc_ratio", type=float, default=0.5)
-    p.add_argument("--dropout", type=float, default=0.0)
-    p.add_argument("--progressive_windows", default="257,65,17,5,1")
+    p.add_argument("--ffc_ratio", type=float, default=None)
+    p.add_argument("--dropout", type=float, default=None)
+    p.add_argument(
+        "--progressive_windows",
+        default=None,
+        help="comma-separated windows; defaults to the selected model size preset",
+    )
 
     p.add_argument("--epochs", type=int, default=100)
-    p.add_argument("--batch_size", type=int, default=4)
+    p.add_argument(
+        "--batch_size",
+        type=int,
+        default=None,
+        help="defaults to the selected model size preset recommendation",
+    )
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--lr_g", type=float, default=2e-4)
     p.add_argument("--lr_d", type=float, default=1e-4)
@@ -120,6 +153,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--resume", default=None, help="checkpoint to resume")
     return p
+
+
+def print_model_sizes() -> None:
+    for name in model_preset_names():
+        preset = get_model_preset(name)
+        cfg = preset.config
+        print(
+            f"{name}: {preset.description} "
+            f"channels={cfg.channels} blocks={cfg.num_blocks} "
+            f"hidden={cfg.rnn_hidden} heads={cfg.attention_heads} "
+            f"attention={cfg.time_attention} windows={preset.progressive_windows} "
+            f"suggested_batch_size={preset.suggested_batch_size}"
+        )
 
 
 def cosine_warmup_lambda(total_steps: int, warmup_steps: int, min_lr_ratio: float):
@@ -202,6 +248,12 @@ def validate(
 
 def main() -> None:
     args = build_arg_parser().parse_args()
+    if args.list_model_sizes:
+        print_model_sizes()
+        return
+    if args.train_manifest is None:
+        raise ValueError("--train_manifest is required unless --list_model_sizes is used")
+
     if args.torch_num_threads and args.torch_num_threads > 0:
         torch.set_num_threads(args.torch_num_threads)
     torch.manual_seed(args.seed)
@@ -209,33 +261,26 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    windows = parse_windows(args.progressive_windows, args.num_blocks)
-    mrstft_fft_sizes = tuple(int(x) for x in args.mrstft_fft_sizes.split(",") if x)
-
-    cfg = FSCNetConfig(
-        target_sr=args.target_sr,
-        input_sr=args.input_sr,
-        n_fft=args.n_fft,
-        win_length=args.win_length,
-        hop_length=args.hop_length,
-        subbands=args.subbands,
-        channels=args.channels,
-        num_blocks=args.num_blocks,
-        ffc_ratio=args.ffc_ratio,
-        attention_heads=args.attention_heads,
-        time_attention=args.time_attention,
-        time_attention_qk_norm=args.time_attention_qk_norm,
-        time_attention_rope=args.time_attention_rope,
-        rnn_hidden=args.rnn_hidden,
-        dropout=args.dropout,
+    overrides = {field: getattr(args, field) for field in MODEL_OVERRIDE_FIELDS}
+    cfg, windows = resolve_model_config(
+        args.model_size,
+        overrides=overrides,
+        progressive_windows=args.progressive_windows,
     )
+    if args.batch_size is None:
+        args.batch_size = get_model_preset(args.model_size).suggested_batch_size
+    mrstft_fft_sizes = tuple(int(x) for x in args.mrstft_fft_sizes.split(",") if x)
     model = FSCNet(cfg).to(device)
+    print(
+        f"Model preset: {args.model_size}; windows={windows}; "
+        f"config={cfg.to_dict()}"
+    )
     print(f"Generator parameters: {count_parameters(model) / 1e6:.3f} M")
 
     train_ds = BandwidthExtensionDataset(
         args.train_manifest,
-        target_sr=args.target_sr,
-        input_sr=args.input_sr,
+        target_sr=cfg.target_sr,
+        input_sr=cfg.input_sr,
         segment_seconds=args.segment_seconds,
         normalize=True,
         random_crop=True,
@@ -252,8 +297,8 @@ def main() -> None:
     if args.valid_manifest:
         valid_ds = BandwidthExtensionDataset(
             args.valid_manifest,
-            target_sr=args.target_sr,
-            input_sr=args.input_sr,
+            target_sr=cfg.target_sr,
+            input_sr=cfg.input_sr,
             segment_seconds=args.segment_seconds,
             normalize=True,
             random_crop=False,

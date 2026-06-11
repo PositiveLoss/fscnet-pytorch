@@ -42,18 +42,31 @@ clean target at 48 kHz -> downsample to --input_sr -> resample back to 48 kHz
 
 ## Train
 
+List built-in model size presets:
+
+```bash
+python train_fscnet.py --list_model_sizes
+```
+
+| preset | params | blocks | channels | hidden | attention | suggested batch |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| `tiny` | 0.121 M | 3 | 24 | 32 | v1 | 8 |
+| `small` | 0.299 M | 4 | 32 | 48 | v1 | 6 |
+| `compact` | 0.754 M | 5 | 48 | 64 | v1 | 4 |
+| `medium` | 1.718 M | 6 | 64 | 96 | v2 bare SDPA | 2 |
+| `large` | 3.525 M | 6 | 96 | 128 | v2 bare SDPA | 1 |
+
 4 kHz to 48 kHz:
 
 ```bash
-pip install -r requirements.txt
 python train_fscnet.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_4k48k \
+  --model_size compact \
   --input_sr 4000 \
   --target_sr 48000 \
   --epochs 100 \
-  --batch_size 4 \
   --amp
 ```
 
@@ -64,10 +77,54 @@ python train_fscnet.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_16k48k \
+  --model_size compact \
   --input_sr 16000 \
   --target_sr 48000 \
   --epochs 100 \
-  --batch_size 4 \
+  --amp
+```
+
+Train different model sizes:
+
+```bash
+python train_fscnet.py \
+  --train_manifest train.txt \
+  --valid_manifest valid.txt \
+  --out_dir runs/fscnet_tiny \
+  --model_size tiny \
+  --epochs 50 \
+  --amp
+
+python train_fscnet.py \
+  --train_manifest train.txt \
+  --valid_manifest valid.txt \
+  --out_dir runs/fscnet_medium \
+  --model_size medium \
+  --epochs 100 \
+  --amp
+
+python train_fscnet.py \
+  --train_manifest train.txt \
+  --valid_manifest valid.txt \
+  --out_dir runs/fscnet_large \
+  --model_size large \
+  --epochs 150 \
+  --segment_seconds 1.5 \
+  --amp
+```
+
+Architecture flags override the preset, so this is valid:
+
+```bash
+python train_fscnet.py \
+  --train_manifest train.txt \
+  --valid_manifest valid.txt \
+  --out_dir runs/fscnet_custom \
+  --model_size small \
+  --channels 40 \
+  --num_blocks 5 \
+  --rnn_hidden 64 \
+  --progressive_windows 257,65,17,5,1 \
   --amp
 ```
 

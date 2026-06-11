@@ -90,9 +90,15 @@ def load_audio(
         raise FileNotFoundError(path)
 
     if _TORCHAUDIO_OK:
-        wav, sr = torchaudio.load(str(path))
-        wav = wav.to(torch.float32)
+        try:
+            wav, sr = torchaudio.load(str(path))
+            wav = wav.to(torch.float32)
+        except Exception:
+            wav = None
     else:
+        wav = None
+
+    if wav is None:
         if sf is None:  # pragma: no cover
             raise RuntimeError(
                 f"soundfile is required for audio I/O: {_SF_IMPORT_ERROR!r}"
@@ -117,8 +123,11 @@ def save_audio(path: str | Path, wav: torch.Tensor, sample_rate: int) -> None:
     wav_2d = ensure_2d_audio(wav)
 
     if _TORCHAUDIO_OK:
-        torchaudio.save(str(path), wav_2d, sample_rate)
-        return
+        try:
+            torchaudio.save(str(path), wav_2d, sample_rate)
+            return
+        except Exception:
+            pass
     if sf is None:  # pragma: no cover
         raise RuntimeError(f"soundfile is required for audio I/O: {_SF_IMPORT_ERROR!r}")
     sf.write(str(path), wav_2d.T.numpy(), sample_rate)

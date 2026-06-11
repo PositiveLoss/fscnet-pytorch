@@ -69,6 +69,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--num_blocks", type=int, default=5)
     p.add_argument("--rnn_hidden", type=int, default=64)
     p.add_argument("--attention_heads", type=int, default=4)
+    p.add_argument("--time_attention", choices=("v1", "v2"), default="v1")
+    p.add_argument(
+        "--time_attention_qk_norm",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="enable QK normalization for --time_attention v2",
+    )
+    p.add_argument(
+        "--time_attention_rope",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="enable rotary time positions for --time_attention v2",
+    )
     p.add_argument("--ffc_ratio", type=float, default=0.5)
     p.add_argument("--dropout", type=float, default=0.0)
     p.add_argument("--progressive_windows", default="257,65,17,5,1")
@@ -210,6 +223,9 @@ def main() -> None:
         num_blocks=args.num_blocks,
         ffc_ratio=args.ffc_ratio,
         attention_heads=args.attention_heads,
+        time_attention=args.time_attention,
+        time_attention_qk_norm=args.time_attention_qk_norm,
+        time_attention_rope=args.time_attention_rope,
         rnn_hidden=args.rnn_hidden,
         dropout=args.dropout,
     )

@@ -33,6 +33,9 @@ class FSCNetConfig:
     num_blocks: int = 5
     ffc_ratio: float = 0.5
     attention_heads: int = 4
+    time_attention: str = "v1"
+    time_attention_qk_norm: bool = True
+    time_attention_rope: bool = True
     rnn_hidden: int = 64
     dropout: float = 0.0
     center: bool = True
@@ -268,6 +271,76 @@ class TimeSelfAttention(nn.Module):
         return x + y
 
 
+class TimeSelfAttentionV2(nn.Module):
+    """SDPA time attention with optional RoPE and QK normalization."""
+
+    def __init__(
+        self,
+        channels: int,
+        heads: int,
+        dropout: float,
+        qk_norm: bool = True,
+        rope: bool = True,
+    ) -> None:
+        super().__init__()
+        heads = max(1, min(heads, channels))
+        while channels % heads != 0 and heads > 1:
+            heads -= 1
+        self.heads = heads
+        self.dim_head = channels // heads
+        self.qk_norm = qk_norm
+        self.rope = rope and self.dim_head % 2 == 0
+        self.dropout_p = float(dropout)
+        self.norm = nn.LayerNorm(channels)
+        self.to_qkv = nn.Linear(channels, channels * 3)
+        self.to_out = nn.Linear(channels, channels)
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+
+    def _apply_rope(self, x: torch.Tensor) -> torch.Tensor:
+        frames = x.shape[-2]
+        half = self.dim_head // 2
+        pos = torch.arange(frames, device=x.device, dtype=torch.float32)
+        freq = torch.arange(half, device=x.device, dtype=torch.float32)
+        inv_freq = 1.0 / (10_000 ** (freq / float(half)))
+        angles = pos[:, None] * inv_freq[None, :]
+        sin = angles.sin().to(dtype=x.dtype).view(1, 1, frames, half)
+        cos = angles.cos().to(dtype=x.dtype).view(1, 1, frames, half)
+        x1, x2 = x[..., :half], x[..., half : half * 2]
+        rotated = torch.cat((x1 * cos - x2 * sin, x1 * sin + x2 * cos), dim=-1)
+        if self.dim_head == half * 2:
+            return rotated
+        return torch.cat((rotated, x[..., half * 2 :]), dim=-1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        bsz, channels, freq, frames = x.shape
+        seq = x.permute(0, 2, 3, 1).reshape(bsz * freq, frames, channels)
+        qkv = self.to_qkv(self.norm(seq))
+        qkv = qkv.view(bsz * freq, frames, 3, self.heads, self.dim_head)
+        q, k, v = qkv.unbind(dim=2)
+        q = q.permute(0, 2, 1, 3)
+        k = k.permute(0, 2, 1, 3)
+        v = v.permute(0, 2, 1, 3)
+
+        if self.rope:
+            q = self._apply_rope(q)
+            k = self._apply_rope(k)
+        if self.qk_norm:
+            scale = self.dim_head**0.5
+            q = F.normalize(q, dim=-1) * scale
+            k = F.normalize(k, dim=-1) * scale
+
+        y = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            dropout_p=self.dropout_p if self.training else 0.0,
+        )
+        y = y.permute(0, 2, 1, 3).reshape(bsz * freq, frames, channels)
+        y = self.dropout(self.to_out(y))
+        y = y.reshape(bsz, freq, frames, channels).permute(0, 3, 1, 2)
+        return x + y
+
+
 class TFFFCBlock(nn.Module):
     """TF-FFC block: FFC stack, retained intra-RNN, and attention."""
 
@@ -276,7 +349,18 @@ class TFFFCBlock(nn.Module):
         self.ffc1 = ResidualFFC(cfg.channels, cfg.ffc_ratio, cfg.dropout)
         self.ffc2 = ResidualFFC(cfg.channels, cfg.ffc_ratio, cfg.dropout)
         self.intra_rnn = IntraFrequencyRNN(cfg.channels, cfg.rnn_hidden, cfg.dropout)
-        self.attn = TimeSelfAttention(cfg.channels, cfg.attention_heads, cfg.dropout)
+        if cfg.time_attention == "v1":
+            self.attn = TimeSelfAttention(cfg.channels, cfg.attention_heads, cfg.dropout)
+        elif cfg.time_attention == "v2":
+            self.attn = TimeSelfAttentionV2(
+                cfg.channels,
+                cfg.attention_heads,
+                cfg.dropout,
+                qk_norm=cfg.time_attention_qk_norm,
+                rope=cfg.time_attention_rope,
+            )
+        else:
+            raise ValueError(f"Unknown time_attention={cfg.time_attention!r}")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.ffc1(x)

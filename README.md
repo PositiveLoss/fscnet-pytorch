@@ -83,6 +83,23 @@ python train_fscnet.py \
   --fm_weight 10
 ```
 
+Try the SDPA-based time attention variant:
+
+```bash
+python train_fscnet.py \
+  --train_manifest train.txt \
+  --valid_manifest valid.txt \
+  --out_dir runs/fscnet_v2attn \
+  --time_attention v2
+```
+
+Compare the time-attention blocks directly:
+
+```bash
+python compare_time_attention.py --device cuda
+python compare_time_attention.py --device cuda --v2_no_qk_norm --v2_no_rope
+```
+
 ## Inference
 
 For a real narrowband file:

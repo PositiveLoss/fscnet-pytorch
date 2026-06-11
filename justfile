@@ -28,7 +28,7 @@ typecheck-config:
 
 # List model size presets.
 sizes:
-    uv run python train_fscnet.py --list_model_sizes
+    uv run python train.py --list_model_sizes
 
 # Generate a paired JSONL manifest with fast-audio-resampler.
 manifest input_dir out_dir input_sr="4000" target_sr="48000" workers="0":
@@ -82,7 +82,7 @@ smoke-train:
         encoding="utf-8",
     )
     PY
-    uv run python train_fscnet.py \
+    uv run python train.py \
       --train_manifest "$tmp/train.txt" \
       --out_dir "$tmp/run" \
       --model_size tiny \
@@ -103,7 +103,7 @@ smoke-train:
 train train_manifest valid_manifest="" out_dir="runs/fscnet" model_size="compact":
     valid_arg="{{valid_manifest}}"; \
     if [[ -n "$valid_arg" ]]; then valid_arg="--valid_manifest $valid_arg"; fi; \
-    uv run python train_fscnet.py \
+    uv run python train.py \
       --train_manifest {{train_manifest}} \
       $valid_arg \
       --out_dir {{out_dir}} \
@@ -116,7 +116,7 @@ train-trackio train_manifest valid_manifest="" out_dir="runs/fscnet" model_size=
     if [[ -n "$valid_arg" ]]; then valid_arg="--valid_manifest $valid_arg"; fi; \
     name_arg="{{run_name}}"; \
     if [[ -n "$name_arg" ]]; then name_arg="--trackio_name $name_arg"; fi; \
-    uv run python train_fscnet.py \
+    uv run python train.py \
       --train_manifest {{train_manifest}} \
       $valid_arg \
       --out_dir {{out_dir}} \
@@ -133,7 +133,7 @@ trackio-show project="fscnet":
 train-4k48 train_manifest valid_manifest="" out_dir="runs/fscnet_4k48k" model_size="compact":
     valid_arg="{{valid_manifest}}"; \
     if [[ -n "$valid_arg" ]]; then valid_arg="--valid_manifest $valid_arg"; fi; \
-    uv run python train_fscnet.py \
+    uv run python train.py \
       --train_manifest {{train_manifest}} \
       $valid_arg \
       --out_dir {{out_dir}} \
@@ -146,7 +146,7 @@ train-4k48 train_manifest valid_manifest="" out_dir="runs/fscnet_4k48k" model_si
 train-16k48 train_manifest valid_manifest="" out_dir="runs/fscnet_16k48k" model_size="compact":
     valid_arg="{{valid_manifest}}"; \
     if [[ -n "$valid_arg" ]]; then valid_arg="--valid_manifest $valid_arg"; fi; \
-    uv run python train_fscnet.py \
+    uv run python train.py \
       --train_manifest {{train_manifest}} \
       $valid_arg \
       --out_dir {{out_dir}} \
@@ -157,7 +157,7 @@ train-16k48 train_manifest valid_manifest="" out_dir="runs/fscnet_16k48k" model_
 
 # Run inference. Example: just infer runs/fscnet/last.pt input.wav output.wav
 infer checkpoint input output:
-    uv run python infer_fscnet.py \
+    uv run python inference.py \
       --checkpoint {{checkpoint}} \
       --input {{input}} \
       --output {{output}} \
@@ -165,7 +165,7 @@ infer checkpoint input output:
 
 # Export ONNX for a fixed sample length.
 onnx checkpoint output sample_length="48000":
-    uv run python export_fscnet_onnx.py \
+    uv run python export_to_onnx.py \
       --checkpoint {{checkpoint}} \
       --output {{output}} \
       --sample_length {{sample_length}} \

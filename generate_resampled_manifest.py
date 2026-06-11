@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Prepare paired FSC-Net manifests with fast-audio-resampler.
 
 The generated JSONL manifest contains:

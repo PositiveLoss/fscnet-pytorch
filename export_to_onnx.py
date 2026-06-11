@@ -1,8 +1,7 @@
-#!/usr/bin/env python3
 """Export an FSC-Net checkpoint to ONNX.
 
 Example:
-  python export_fscnet_onnx.py \
+  python export_to_onnx.py \
     --checkpoint runs/fscnet_4k48k/last.pt \
     --output runs/fscnet_4k48k/fscnet.onnx \
     --sample_length 48000 \
@@ -148,7 +147,7 @@ def verify_onnx(
 
 def main(
     checkpoint: Path = option(
-        ..., "--checkpoint", help="checkpoint from train_fscnet.py"
+        ..., "--checkpoint", help="checkpoint from train.py"
     ),
     output: Path = option(..., "--output", help="output .onnx path"),
     sample_length: int = option(

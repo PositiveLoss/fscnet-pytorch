@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Compare FSC-Net time attention implementations.
 
 Example:

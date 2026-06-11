@@ -60,7 +60,7 @@ The script writes `data/fscnet_4k48/manifest.jsonl` with `hr_path` and
 training:
 
 ```bash
-python train_fscnet.py \
+python train.py \
   --train_manifest data/fscnet_4k48/manifest.jsonl \
   --out_dir runs/fscnet_4k48 \
   --input_sr 4000 \
@@ -72,7 +72,7 @@ python train_fscnet.py \
 List built-in model size presets:
 
 ```bash
-python train_fscnet.py --list_model_sizes
+python train.py --list_model_sizes
 ```
 
 | preset | params | blocks | channels | hidden | attention | suggested batch |
@@ -86,7 +86,7 @@ python train_fscnet.py --list_model_sizes
 4 kHz to 48 kHz:
 
 ```bash
-python train_fscnet.py \
+python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_4k48k \
@@ -100,7 +100,7 @@ python train_fscnet.py \
 16 kHz to 48 kHz:
 
 ```bash
-python train_fscnet.py \
+python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_16k48k \
@@ -114,7 +114,7 @@ python train_fscnet.py \
 Train different model sizes:
 
 ```bash
-python train_fscnet.py \
+python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_tiny \
@@ -122,7 +122,7 @@ python train_fscnet.py \
   --epochs 50 \
   --amp
 
-python train_fscnet.py \
+python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_medium \
@@ -130,7 +130,7 @@ python train_fscnet.py \
   --epochs 100 \
   --amp
 
-python train_fscnet.py \
+python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_large \
@@ -143,7 +143,7 @@ python train_fscnet.py \
 Architecture flags override the preset, so this is valid:
 
 ```bash
-python train_fscnet.py \
+python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_custom \
@@ -158,7 +158,7 @@ python train_fscnet.py \
 Enable adversarial training after the reconstruction loss starts converging:
 
 ```bash
-python train_fscnet.py \
+python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_gan \
@@ -170,7 +170,7 @@ python train_fscnet.py \
 Try the SDPA-based time attention variant:
 
 ```bash
-python train_fscnet.py \
+python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_v2attn \
@@ -187,7 +187,7 @@ python compare_time_attention.py --device cuda --v2_no_qk_norm --v2_no_rope
 Track training with Trackio:
 
 ```bash
-python train_fscnet.py \
+python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_tracked \
@@ -213,7 +213,7 @@ add `--trackio_space_id username/space-name` or
 For a real narrowband file:
 
 ```bash
-python infer_fscnet.py \
+python inference.py \
   --checkpoint runs/fscnet_4k48k/last.pt \
   --input input_4k.wav \
   --output enhanced_48k.wav \
@@ -223,7 +223,7 @@ python infer_fscnet.py \
 To simulate a 4 kHz input from a full-band file before enhancement:
 
 ```bash
-python infer_fscnet.py \
+python inference.py \
   --checkpoint runs/fscnet_4k48k/last.pt \
   --input clean_48k.wav \
   --output enhanced_from_simulated_4k.wav \
@@ -233,7 +233,7 @@ python infer_fscnet.py \
 For long files, use chunking:
 
 ```bash
-python infer_fscnet.py \
+python inference.py \
   --checkpoint runs/fscnet_4k48k/last.pt \
   --input input_4k.wav \
   --output enhanced_48k.wav \
@@ -246,7 +246,7 @@ python infer_fscnet.py \
 Export a trained checkpoint for a fixed input length:
 
 ```bash
-python export_fscnet_onnx.py \
+python export_to_onnx.py \
   --checkpoint runs/fscnet_4k48k/last.pt \
   --output runs/fscnet_4k48k/fscnet_1s.onnx \
   --sample_length 48000 \

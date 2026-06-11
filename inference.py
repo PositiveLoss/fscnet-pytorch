@@ -1,8 +1,7 @@
-#!/usr/bin/env python3
 """Run FSC-Net bandwidth extension inference.
 
 Example:
-  python infer_fscnet.py --checkpoint runs/fscnet/last.pt --input noisy_4k.wav --output enhanced_48k.wav
+  python inference.py --checkpoint runs/fscnet/last.pt --input noisy_4k.wav --output enhanced_48k.wav
 """
 
 from __future__ import annotations
@@ -58,7 +57,7 @@ def main(
     checkpoint: Path = option(
         ...,
         "--checkpoint",
-        help="checkpoint produced by train_fscnet.py",
+        help="checkpoint produced by train.py",
     ),
     input: Path = option(..., "--input", help="input narrowband audio"),
     output: Path = option(..., "--output", help="output enhanced audio path"),

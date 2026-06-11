@@ -1,8 +1,7 @@
-#!/usr/bin/env python3
 """Train an FSC-Net style speech bandwidth extension model.
 
 Example:
-  python train_fscnet.py \
+  python train.py \
     --train_manifest train.jsonl --valid_manifest valid.jsonl \
     --input_sr 4000 --target_sr 48000 --epochs 100 --batch_size 8
 """

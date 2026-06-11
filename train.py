@@ -24,7 +24,11 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from fscnet_pytorch.audio import complex_to_ri, resample_audio, stft_complex
-from fscnet_pytorch.checkpoint import load_training_checkpoint, save_training_checkpoint
+from fscnet_pytorch.checkpoint import (
+    checkpoint_sidecar_path,
+    load_training_checkpoint,
+    save_training_checkpoint,
+)
 from fscnet_pytorch.cli import option, run
 from fscnet_pytorch.config import (
     get_model_preset,
@@ -352,6 +356,19 @@ def save_checkpoint(
     )
 
 
+def delete_checkpoint(path: Path) -> None:
+    path.unlink(missing_ok=True)
+    checkpoint_sidecar_path(path).unlink(missing_ok=True)
+
+
+def prune_numbered_checkpoints(out_path: Path, keep_n_checkpoints: int) -> None:
+    if keep_n_checkpoints <= 0:
+        return
+    checkpoints = sorted(out_path.glob("checkpoint_epoch_*.safetensors"))
+    for checkpoint in checkpoints[:-keep_n_checkpoints]:
+        delete_checkpoint(checkpoint)
+
+
 @torch.no_grad()
 def validate(
     model: FSCNet,
@@ -587,6 +604,19 @@ def main(
     save_every: int = option(
         1, "--save-every", "--save_every", help="save every N epochs", min=1
     ),
+    keep_n_checkpoints: int = option(
+        0,
+        "--keep-n-checkpoints",
+        "--keep_n_checkpoints",
+        help="keep only the newest N numbered epoch checkpoints; 0 keeps all",
+        min=0,
+    ),
+    save_best_checkpoint: bool = option(
+        False,
+        "--save-best-checkpoint/--no-save-best-checkpoint",
+        "--save_best_checkpoint/--no_save_best_checkpoint",
+        help="save best.safetensors when validation reconstruction loss improves",
+    ),
     valid_every: int = option(
         1, "--valid-every", "--valid_every", help="validate every N epochs", min=1
     ),
@@ -767,6 +797,14 @@ def main(
         args.eval_metrics and valid_loader is not None,
         cfg.target_sr,
     )
+    best_valid_recon_loss = math.inf
+    best_metrics_path = out_path / "best_metrics.json"
+    if args.save_best_checkpoint and best_metrics_path.exists():
+        try:
+            best_metrics = json.loads(best_metrics_path.read_text(encoding="utf-8"))
+            best_valid_recon_loss = float(best_metrics["valid_recon_loss"])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            print(f"Ignoring unreadable best checkpoint metrics: {exc}")
     printed_kernel_runtime = False
 
     for epoch in range(start_epoch, args.epochs):
@@ -920,6 +958,42 @@ def main(
                 for key, value in metrics.items():
                     valid_metrics[f"valid/{key.removeprefix('valid_')}"] = value
                 tracker.log(valid_metrics)
+            valid_recon_loss = metrics["valid_recon_loss"]
+            if args.save_best_checkpoint and valid_recon_loss < best_valid_recon_loss:
+                best_valid_recon_loss = valid_recon_loss
+                save_checkpoint(
+                    out_path / "best.safetensors",
+                    model,
+                    optimizer_g,
+                    scheduler_g,
+                    epoch,
+                    global_step,
+                    args,
+                    windows,
+                    discriminators=discriminators,
+                    optimizer_d=optimizer_d,
+                    scheduler_d=scheduler_d,
+                )
+                best_metrics_path.write_text(
+                    json.dumps(
+                        {
+                            "epoch": epoch + 1,
+                            "step": global_step,
+                            "valid_recon_loss": best_valid_recon_loss,
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                if tracker is not None:
+                    tracker.log(
+                        {
+                            "step": global_step,
+                            "epoch": epoch + 1,
+                            "checkpoint/best_epoch": epoch + 1,
+                            "checkpoint/best_valid_recon_loss": best_valid_recon_loss,
+                        }
+                    )
 
         if (epoch + 1) % args.save_every == 0:
             save_checkpoint(
@@ -935,6 +1009,7 @@ def main(
                 optimizer_d=optimizer_d,
                 scheduler_d=scheduler_d,
             )
+            prune_numbered_checkpoints(out_path, args.keep_n_checkpoints)
             save_checkpoint(
                 out_path / "last.safetensors",
                 model,

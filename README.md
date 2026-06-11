@@ -96,11 +96,11 @@ uv run python train.py --list_model_sizes
 
 | preset | params | blocks | channels | hidden | attention | suggested batch |
 | --- | ---: | ---: | ---: | ---: | --- | ---: |
-| `tiny` | 0.121 M | 3 | 24 | 32 | v1 | 8 |
-| `small` | 0.299 M | 4 | 32 | 48 | v1 | 6 |
-| `compact` | 0.754 M | 5 | 48 | 64 | v1 | 4 |
-| `medium` | 1.718 M | 6 | 64 | 96 | v2 bare SDPA | 2 |
-| `large` | 3.525 M | 6 | 96 | 128 | v2 bare SDPA | 1 |
+| `tiny` | 0.144 M | 3 | 24 | 32 | v1 | 8 |
+| `small` | 0.363 M | 4 | 32 | 48 | v1 | 6 |
+| `compact` | 0.903 M | 5 | 48 | 64 | v1 | 4 |
+| `medium` | 2.097 M | 6 | 64 | 96 | v2 bare SDPA | 2 |
+| `large` | 4.238 M | 6 | 96 | 128 | v2 bare SDPA | 1 |
 
 4 kHz to 48 kHz:
 

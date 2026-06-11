@@ -226,27 +226,86 @@ class ResidualFFC(nn.Module):
         return x + self.dropout(self.ffc(self.norm(x)))
 
 
-class IntraFrequencyRNN(nn.Module):
-    """BLSTM over frequency bins for each time frame."""
+class DepthwiseConv1dProjection(nn.Module):
+    """Depthwise 1-D projection used after the intra-frame BLSTM."""
+
+    def __init__(
+        self, in_channels: int, out_channels: int, kernel_size: int = 3
+    ) -> None:
+        super().__init__()
+        pad = kernel_size // 2
+        self.net = nn.Sequential(
+            nn.Conv1d(
+                in_channels,
+                in_channels,
+                kernel_size=kernel_size,
+                padding=pad,
+                groups=in_channels,
+            ),
+            nn.SiLU(),
+            nn.Conv1d(in_channels, out_channels, kernel_size=1),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class DepthwiseConv2dHead(nn.Module):
+    """Depthwise 2-D output head before CWS merge."""
+
+    def __init__(self, channels: int, out_channels: int, kernel_size: int = 3) -> None:
+        super().__init__()
+        pad = kernel_size // 2
+        self.net = nn.Sequential(
+            nn.Conv2d(
+                channels,
+                channels,
+                kernel_size=kernel_size,
+                padding=pad,
+                groups=channels,
+            ),
+            GlobalLayerNorm(channels),
+            nn.SiLU(),
+            nn.Conv2d(channels, out_channels, kernel_size=1),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class IntraFrameRNN(nn.Module):
+    """Unfold -> LN -> BLSTM -> DConv1D over frequency bins per frame."""
 
     def __init__(self, channels: int, hidden: int, dropout: float) -> None:
         super().__init__()
-        self.norm = nn.LayerNorm(channels)
+        self.unfold_kernel = 3
+        self.unfold = nn.Unfold(
+            kernel_size=(self.unfold_kernel, 1),
+            padding=(self.unfold_kernel // 2, 0),
+        )
+        self.unfold_channels = channels * self.unfold_kernel
+        self.norm = nn.LayerNorm(self.unfold_channels)
         self.rnn = nn.LSTM(
-            input_size=channels,
+            input_size=self.unfold_channels,
             hidden_size=hidden,
             num_layers=1,
             batch_first=True,
             bidirectional=True,
         )
-        self.proj = nn.Linear(hidden * 2, channels)
+        self.proj = DepthwiseConv1dProjection(hidden * 2, channels)
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         bsz, channels, freq, frames = x.shape
-        seq = x.permute(0, 3, 2, 1).reshape(bsz * frames, freq, channels)
+        seq = self.unfold(x).reshape(
+            bsz, self.unfold_channels, freq, frames
+        )
+        seq = seq.permute(0, 3, 2, 1).reshape(
+            bsz * frames, freq, self.unfold_channels
+        )
         y, _ = self.rnn(self.norm(seq))
-        y = self.dropout(self.proj(y))
+        y = y.transpose(1, 2)
+        y = self.dropout(self.proj(y)).transpose(1, 2)
         y = y.reshape(bsz, frames, freq, channels).permute(0, 3, 2, 1)
         return x + y
 
@@ -366,7 +425,7 @@ class TFFFCBlock(nn.Module):
         super().__init__()
         self.ffc1 = ResidualFFC(cfg.channels, cfg.ffc_ratio, cfg.dropout)
         self.ffc2 = ResidualFFC(cfg.channels, cfg.ffc_ratio, cfg.dropout)
-        self.intra_rnn = IntraFrequencyRNN(cfg.channels, cfg.rnn_hidden, cfg.dropout)
+        self.intra_rnn = IntraFrameRNN(cfg.channels, cfg.rnn_hidden, cfg.dropout)
         self.attn: nn.Module
         if cfg.time_attention == "v1":
             self.attn = TimeSelfAttention(
@@ -432,12 +491,10 @@ class FSCNet(nn.Module):
         )
         self.ffc_in = ResidualFFC(cfg.channels, cfg.ffc_ratio, cfg.dropout)
         self.blocks = nn.ModuleList([TFFFCBlock(cfg) for _ in range(cfg.num_blocks)])
+        self.ffc_out = ResidualFFC(cfg.channels, cfg.ffc_ratio, cfg.dropout)
         self.stage_heads = nn.ModuleList(
             [
-                nn.Sequential(
-                    ResidualFFC(cfg.channels, cfg.ffc_ratio, cfg.dropout),
-                    nn.Conv2d(cfg.channels, in_ch, kernel_size=3, padding=1),
-                )
+                DepthwiseConv2dHead(cfg.channels, in_ch)
                 for _ in range(cfg.num_blocks)
             ]
         )
@@ -480,9 +537,11 @@ class FSCNet(nn.Module):
         h = self.ffc_in(self.input(x))
 
         stage_outputs: List[torch.Tensor] = []
-        for block, head in zip(self.blocks, self.stage_heads):
+        last_block_idx = len(self.blocks) - 1
+        for idx, (block, head) in enumerate(zip(self.blocks, self.stage_heads)):
             h = block(h)
-            delta = cws_merge(head(h), self.cfg.subbands, original_freq)
+            head_input = self.ffc_out(h) if idx == last_block_idx else h
+            delta = cws_merge(head(head_input), self.cfg.subbands, original_freq)
             stage_outputs.append(input_ri + delta)
 
         if return_all:

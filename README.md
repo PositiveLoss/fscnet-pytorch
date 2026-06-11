@@ -10,6 +10,8 @@ The paper says the official source code will be released after acceptance, so th
 
 - Complex STFT spectral mapping.
 - 48 kHz target sample rate with 32 ms STFT window and 16 ms hop by default.
+  For other target sample rates, set `--n_fft`, `--win_length`, and
+  `--hop_length` to keep the same 32 ms / 16 ms timing.
 - Channel-wise subband split/merge with 3 subbands by default.
 - TF-FFC blocks with:
   - local/global Fast Fourier Convolution branches,
@@ -39,7 +41,7 @@ JSONL:
 If `lr_path` is absent, the dataset creates narrowband input on the fly:
 
 ```text
-clean target at 48 kHz -> downsample to --input_sr -> resample back to 48 kHz
+clean target audio -> downsample to --input_sr -> resample back to --target_sr
 ```
 
 To precompute paired inputs with `fast-audio-resampler`, generate a JSONL
@@ -102,6 +104,17 @@ uv run python train.py --list_model_sizes
 | `medium` | 2.279 M | 6 | 64 | 96 | v2 bare SDPA | 2 |
 | `large` | 4.650 M | 6 | 96 | 128 | v2 bare SDPA | 1 |
 
+The article reports a 1.54 M parameter FSC-Net. With this implementation's
+paper-style FFC and discriminator updates, the closest paper-shaped generator
+variant is:
+
+```bash
+--model_size compact --channels 60 --rnn_hidden 80
+```
+
+That keeps `N=5`, `B=3`, and windows `257,65,17,5,1`, and has about
+`1.540 M` generator parameters.
+
 Estimate forward GMACs for a preset or custom architecture:
 
 ```bash
@@ -111,6 +124,14 @@ uv run python -m tools.measure_gmacs --model_size compact --channels 60 --rnn_hi
 
 The script counts Conv/Linear/LSTM/attention MACs with module hooks and reports
 FFT/iFFT as a separate estimate.
+
+The default STFT settings are for a 48 kHz target:
+
+| target SR | 32 ms window | 16 ms hop |
+| ---: | ---: | ---: |
+| 48 kHz | `--n_fft 1536 --win_length 1536` | `--hop_length 768` |
+| 16 kHz | `--n_fft 512 --win_length 512` | `--hop_length 256` |
+| 8 kHz | `--n_fft 256 --win_length 256` | `--hop_length 128` |
 
 4 kHz to 48 kHz:
 
@@ -162,6 +183,25 @@ uv run python train.py \
   --precision fp16
 ```
 
+8 kHz to 16 kHz:
+
+```bash
+uv run python train.py \
+  --train_manifest train.txt \
+  --valid_manifest valid.txt \
+  --out_dir runs/fscnet_8k16k \
+  --model_size compact \
+  --channels 60 \
+  --rnn_hidden 80 \
+  --input_sr 8000 \
+  --target_sr 16000 \
+  --n_fft 512 \
+  --win_length 512 \
+  --hop_length 256 \
+  --epochs 100 \
+  --precision fp16
+```
+
 Train different model sizes:
 
 ```bash
@@ -206,7 +246,9 @@ uv run python train.py \
   --precision fp16
 ```
 
-Use the article's adversarial loss weights:
+GAN training is enabled by default with the article's adversarial loss weights
+(`--adv_weight 0.34`, `--fm_weight 0.1`). To delay adversarial training until
+the reconstruction loss has started moving, add `--adv_start_step`:
 
 ```bash
 uv run python train.py \
@@ -214,7 +256,8 @@ uv run python train.py \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_gan \
   --adv_weight 0.34 \
-  --fm_weight 0.1
+  --fm_weight 0.1 \
+  --adv_start_step 10000
 ```
 
 Try the SDPA-based time attention variant:

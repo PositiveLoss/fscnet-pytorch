@@ -1,12 +1,12 @@
 # Training FSC-Net on Google Colab with a Hugging Face Dataset
 
 This guide shows how to train your own FSC-Net bandwidth-extension model on
-Google Colab using an NVIDIA L4 GPU and a 48 kHz dataset hosted on Hugging Face
+Google Colab using an NVIDIA L4 GPU and an audio dataset hosted on Hugging Face
 Datasets.
 
-The examples below assume you want to train a model that reconstructs 48 kHz
-audio from a simulated narrowband input, for example `4 kHz -> 48 kHz` or
-`16 kHz -> 48 kHz`.
+Most examples below reconstruct 48 kHz audio from a simulated narrowband input,
+for example `4 kHz -> 48 kHz` or `16 kHz -> 48 kHz`. A separate `8 kHz -> 16 kHz`
+recipe is included because 16 kHz targets need different STFT settings.
 
 ## 1. Start a Colab GPU runtime
 
@@ -40,6 +40,26 @@ export HF_DATASET_ID="your-org/your-48khz-dataset"
 #   16000 = easier wideband-to-fullband task
 export INPUT_SR="4000"
 export TARGET_SR="48000"
+export TARGET_KHZ="$((TARGET_SR / 1000))k"
+
+# Keep the paper's 32 ms STFT window and 16 ms hop for the target sample rate.
+if [ "$TARGET_SR" = "48000" ]; then
+  export N_FFT="1536"
+  export WIN_LENGTH="1536"
+  export HOP_LENGTH="768"
+elif [ "$TARGET_SR" = "16000" ]; then
+  export N_FFT="512"
+  export WIN_LENGTH="512"
+  export HOP_LENGTH="256"
+elif [ "$TARGET_SR" = "8000" ]; then
+  export N_FFT="256"
+  export WIN_LENGTH="256"
+  export HOP_LENGTH="128"
+else
+  export N_FFT="$((TARGET_SR * 32 / 1000))"
+  export WIN_LENGTH="$N_FFT"
+  export HOP_LENGTH="$((TARGET_SR * 16 / 1000))"
+fi
 ```
 
 ## 2. Install uv and clone the repo
@@ -141,7 +161,7 @@ audio_column = os.environ.get("AUDIO_COLUMN", "audio")
 split = os.environ.get("HF_SPLIT", "train")
 target_sr = int(os.environ.get("TARGET_SR", "48000"))
 
-out_dir = Path(os.environ["DATA_ROOT"]) / "hr_48k"
+out_dir = Path(os.environ["DATA_ROOT"]) / f"hr_{target_sr // 1000}k"
 out_dir.mkdir(parents=True, exist_ok=True)
 
 ds = load_dataset(dataset_id, split=split)
@@ -165,13 +185,13 @@ PY
 
 The recommended path is to precompute paired files once. The script writes:
 
-- `hr/*.wav`: clean 48 kHz target audio
+- `hr/*.wav`: clean target audio at `TARGET_SR`
 - `lr_${INPUT_SR}/*.wav`: audio downsampled through `INPUT_SR`, then resampled
-  back to 48 kHz for model input
+  back to `TARGET_SR` for model input
 - `manifest.jsonl`: rows with `hr_path` and `lr_path`
 
 For Option A, point `--input_dir` at the downloaded snapshot directory. For
-Option B, point it at `DATA_ROOT/hr_48k`.
+Option B, point it at `DATA_ROOT/hr_${TARGET_KHZ}`.
 
 ```bash
 cd "$WORKDIR"
@@ -180,11 +200,11 @@ cd "$WORKDIR"
 export CLEAN_AUDIO_DIR="$DATA_ROOT/hf_snapshot"
 
 # Option B input:
-# export CLEAN_AUDIO_DIR="$DATA_ROOT/hr_48k"
+# export CLEAN_AUDIO_DIR="$DATA_ROOT/hr_${TARGET_KHZ}"
 
 uv run python -m tools.generate_resampled_manifest \
   --input_dir "$CLEAN_AUDIO_DIR" \
-  --out_dir "$DATA_ROOT/fscnet_${INPUT_SR}_48k" \
+  --out_dir "$DATA_ROOT/fscnet_${INPUT_SR}_${TARGET_SR}" \
   --input_sr "$INPUT_SR" \
   --target_sr "$TARGET_SR" \
   --quality balanced \
@@ -199,7 +219,7 @@ Split the generated manifest:
 ```bash
 cd "$WORKDIR"
 uv run python -m tools.split_manifest \
-  --manifest "$DATA_ROOT/fscnet_${INPUT_SR}_48k/manifest.jsonl" \
+  --manifest "$DATA_ROOT/fscnet_${INPUT_SR}_${TARGET_SR}/manifest.jsonl" \
   --valid_ratio 0.1 \
   --seed 1234
 ```
@@ -207,8 +227,8 @@ uv run python -m tools.split_manifest \
 This creates:
 
 ```text
-$DATA_ROOT/fscnet_${INPUT_SR}_48k/train.jsonl
-$DATA_ROOT/fscnet_${INPUT_SR}_48k/valid.jsonl
+$DATA_ROOT/fscnet_${INPUT_SR}_${TARGET_SR}/train.jsonl
+$DATA_ROOT/fscnet_${INPUT_SR}_${TARGET_SR}/valid.jsonl
 ```
 
 ## 5. Run a tiny smoke test
@@ -218,12 +238,15 @@ Before launching a long run, verify that the manifests and GPU path work:
 ```bash
 cd "$WORKDIR"
 uv run python train.py \
-  --train_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_48k/train.jsonl" \
-  --valid_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_48k/valid.jsonl" \
-  --out_dir "$RUN_ROOT/smoke_${INPUT_SR}_48k" \
+  --train_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_${TARGET_SR}/train.jsonl" \
+  --valid_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_${TARGET_SR}/valid.jsonl" \
+  --out_dir "$RUN_ROOT/smoke_${INPUT_SR}_${TARGET_SR}" \
   --model_size tiny \
   --input_sr "$INPUT_SR" \
   --target_sr "$TARGET_SR" \
+  --n_fft "$N_FFT" \
+  --win_length "$WIN_LENGTH" \
+  --hop_length "$HOP_LENGTH" \
   --epochs 1 \
   --batch_size 1 \
   --segment_seconds 1.0 \
@@ -243,12 +266,15 @@ first full run on an L4.
 ```bash
 cd "$WORKDIR"
 uv run python train.py \
-  --train_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_48k/train.jsonl" \
-  --valid_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_48k/valid.jsonl" \
-  --out_dir "$RUN_ROOT/compact_${INPUT_SR}_48k" \
+  --train_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_${TARGET_SR}/train.jsonl" \
+  --valid_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_${TARGET_SR}/valid.jsonl" \
+  --out_dir "$RUN_ROOT/compact_${INPUT_SR}_${TARGET_SR}" \
   --model_size compact \
   --input_sr "$INPUT_SR" \
   --target_sr "$TARGET_SR" \
+  --n_fft "$N_FFT" \
+  --win_length "$WIN_LENGTH" \
+  --hop_length "$HOP_LENGTH" \
   --epochs 100 \
   --batch_size 4 \
   --segment_seconds 2.0 \
@@ -258,17 +284,34 @@ uv run python train.py \
   --valid_every 1
 ```
 
+To match the article's reported 1.54 M generator parameter count more closely,
+keep the compact preset shape but override width and BLSTM hidden size:
+
+```bash
+--channels 60 --rnn_hidden 80
+```
+
+For a first run with the revised paired waveform/spectrogram discriminator, it
+is often useful to delay GAN training:
+
+```bash
+--adv_start_step 10000
+```
+
 For lower memory:
 
 ```bash
 cd "$WORKDIR"
 uv run python train.py \
-  --train_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_48k/train.jsonl" \
-  --valid_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_48k/valid.jsonl" \
-  --out_dir "$RUN_ROOT/small_${INPUT_SR}_48k" \
+  --train_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_${TARGET_SR}/train.jsonl" \
+  --valid_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_${TARGET_SR}/valid.jsonl" \
+  --out_dir "$RUN_ROOT/small_${INPUT_SR}_${TARGET_SR}" \
   --model_size small \
   --input_sr "$INPUT_SR" \
   --target_sr "$TARGET_SR" \
+  --n_fft "$N_FFT" \
+  --win_length "$WIN_LENGTH" \
+  --hop_length "$HOP_LENGTH" \
   --epochs 100 \
   --batch_size 2 \
   --segment_seconds 1.5 \
@@ -281,12 +324,15 @@ For more capacity after you have a stable compact run:
 ```bash
 cd "$WORKDIR"
 uv run python train.py \
-  --train_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_48k/train.jsonl" \
-  --valid_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_48k/valid.jsonl" \
-  --out_dir "$RUN_ROOT/medium_${INPUT_SR}_48k" \
+  --train_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_${TARGET_SR}/train.jsonl" \
+  --valid_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_${TARGET_SR}/valid.jsonl" \
+  --out_dir "$RUN_ROOT/medium_${INPUT_SR}_${TARGET_SR}" \
   --model_size medium \
   --input_sr "$INPUT_SR" \
   --target_sr "$TARGET_SR" \
+  --n_fft "$N_FFT" \
+  --win_length "$WIN_LENGTH" \
+  --hop_length "$HOP_LENGTH" \
   --epochs 120 \
   --batch_size 2 \
   --segment_seconds 1.5 \
@@ -309,11 +355,11 @@ To force a fresh run in the same directory, add `--no-auto-resume`.
 
 ## 7. Optional: train without precomputed LR files
 
-You can train from clean 48 kHz audio paths only. The dataset loader will create
-the narrowband input on the fly:
+You can train from clean target-rate audio paths only. The dataset loader will
+create the narrowband input on the fly:
 
 ```text
-clean 48 kHz target -> downsample to INPUT_SR -> resample back to 48 kHz
+clean target-rate audio -> downsample to INPUT_SR -> resample back to TARGET_SR
 ```
 
 Create and split a plain-text manifest yourself:
@@ -342,18 +388,21 @@ Track training locally with Trackio:
 ```bash
 cd "$WORKDIR"
 uv run python train.py \
-  --train_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_48k/train.jsonl" \
-  --valid_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_48k/valid.jsonl" \
-  --out_dir "$RUN_ROOT/tracked_compact_${INPUT_SR}_48k" \
+  --train_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_${TARGET_SR}/train.jsonl" \
+  --valid_manifest "$DATA_ROOT/fscnet_${INPUT_SR}_${TARGET_SR}/valid.jsonl" \
+  --out_dir "$RUN_ROOT/tracked_compact_${INPUT_SR}_${TARGET_SR}" \
   --model_size compact \
   --input_sr "$INPUT_SR" \
   --target_sr "$TARGET_SR" \
+  --n_fft "$N_FFT" \
+  --win_length "$WIN_LENGTH" \
+  --hop_length "$HOP_LENGTH" \
   --epochs 100 \
   --batch_size 4 \
   --precision bf16 \
   --trackio \
   --trackio_project fscnet \
-  --trackio_name "compact_${INPUT_SR}_48k_l4"
+  --trackio_name "compact_${INPUT_SR}_${TARGET_SR}_l4"
 ```
 
 Open the local Trackio UI:
@@ -370,22 +419,22 @@ Use `last.safetensors` or a numbered epoch checkpoint:
 ```bash
 cd "$WORKDIR"
 uv run python inference.py \
-  --checkpoint "$RUN_ROOT/compact_${INPUT_SR}_48k/last.safetensors" \
+  --checkpoint "$RUN_ROOT/compact_${INPUT_SR}_${TARGET_SR}/last.safetensors" \
   --input "/content/example_input.wav" \
-  --output "/content/enhanced_48k.wav" \
+  --output "/content/enhanced_${TARGET_KHZ}.wav" \
   --normalize_input \
   --chunk_seconds 8 \
   --overlap_seconds 0.25
 ```
 
-If you want to test the model from a clean 48 kHz file by simulating the
+If you want to test the model from a clean target-rate file by simulating the
 narrowband input first:
 
 ```bash
 cd "$WORKDIR"
 uv run python inference.py \
-  --checkpoint "$RUN_ROOT/compact_${INPUT_SR}_48k/last.safetensors" \
-  --input "/content/clean_48k_example.wav" \
+  --checkpoint "$RUN_ROOT/compact_${INPUT_SR}_${TARGET_SR}/last.safetensors" \
+  --input "/content/clean_target_rate_example.wav" \
   --output "/content/enhanced_from_simulated_input.wav" \
   --simulate_input_sr "$INPUT_SR" \
   --normalize_input \

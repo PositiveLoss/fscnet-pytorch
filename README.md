@@ -40,6 +40,33 @@ If `lr_path` is absent, the dataset creates narrowband input on the fly:
 clean target at 48 kHz -> downsample to --input_sr -> resample back to 48 kHz
 ```
 
+To precompute paired inputs with `fast-audio-resampler`, generate a JSONL
+manifest with clean HR files and simulated LR files:
+
+```bash
+python generate_resampled_manifest.py \
+  --input_dir /path/to/clean_audio \
+  --out_dir data/fscnet_4k48 \
+  --input_sr 4000 \
+  --target_sr 48000 \
+  --quality balanced \
+  --backend auto \
+  --workers 0
+```
+
+The script writes `data/fscnet_4k48/manifest.jsonl` with `hr_path` and
+`lr_path` entries. `--workers 0` uses all available CPU cores; set
+`--workers 1` for sequential processing. Use that manifest directly for
+training:
+
+```bash
+python train_fscnet.py \
+  --train_manifest data/fscnet_4k48/manifest.jsonl \
+  --out_dir runs/fscnet_4k48 \
+  --input_sr 4000 \
+  --target_sr 48000
+```
+
 ## Train
 
 List built-in model size presets:

@@ -5,6 +5,7 @@ description = "FSC-Net: Integrating Fast Fourier Convolutions and Progressive Le
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "fast-audio-resampler @ https://github.com/RustedBytes/fast-audio-resampler/releases/download/v0.3.0/fast_audio_resampler-0.3.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
     "numpy>=2.4.6",
     "onnx>=1.21.0",
     "onnxruntime-gpu[cuda]>=1.26.0",
@@ -14,7 +15,6 @@ dependencies = [
     "torch>=2.12.0",
     "torchaudio>=2.11.0",
     "torchcodec>=0.14.0",
-    "trackio>=0.27.0",
     "tqdm>=4.68.2",
 ]
 

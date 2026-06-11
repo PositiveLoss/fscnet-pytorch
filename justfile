@@ -30,6 +30,15 @@ typecheck-config:
 sizes:
     uv run python train_fscnet.py --list_model_sizes
 
+# Generate a paired JSONL manifest with fast-audio-resampler.
+manifest input_dir out_dir input_sr="4000" target_sr="48000" workers="0":
+    uv run python generate_resampled_manifest.py \
+      --input_dir {{input_dir}} \
+      --out_dir {{out_dir}} \
+      --input_sr {{input_sr}} \
+      --target_sr {{target_sr}} \
+      --workers {{workers}}
+
 # Compare time attention blocks. Override with: just compare-attn cpu 1 32 64 64
 compare-attn device="cuda" batch="2" channels="48" freq_groups="257" frames="126":
     uv run python compare_time_attention.py \

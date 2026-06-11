@@ -44,7 +44,7 @@ To precompute paired inputs with `fast-audio-resampler`, generate a JSONL
 manifest with clean HR files and simulated LR files:
 
 ```bash
-python generate_resampled_manifest.py \
+uv run python generate_resampled_manifest.py \
   --input_dir /path/to/clean_audio \
   --out_dir data/fscnet_4k48 \
   --input_sr 4000 \
@@ -62,7 +62,7 @@ cores; set `--workers 1` for sequential processing. Use that manifest directly
 for training:
 
 ```bash
-python train.py \
+uv run python train.py \
   --train_manifest data/fscnet_4k48/manifest.jsonl \
   --out_dir runs/fscnet_4k48 \
   --input_sr 4000 \
@@ -74,7 +74,7 @@ python train.py \
 List built-in model size presets:
 
 ```bash
-python train.py --list_model_sizes
+uv run python train.py --list_model_sizes
 ```
 
 | preset | params | blocks | channels | hidden | attention | suggested batch |
@@ -88,7 +88,7 @@ python train.py --list_model_sizes
 4 kHz to 48 kHz:
 
 ```bash
-python train.py \
+uv run python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_4k48k \
@@ -99,10 +99,15 @@ python train.py \
   --amp
 ```
 
+Use `--precision bf16` for bf16 CUDA autocast, or `--precision fp16` for
+explicit fp16 autocast. The legacy `--amp` flag remains an alias for fp16.
+Checkpoints are written as `*.safetensors` plus a matching `*.json` sidecar
+for config, optimizer, scheduler, and resume metadata.
+
 16 kHz to 48 kHz:
 
 ```bash
-python train.py \
+uv run python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_16k48k \
@@ -116,7 +121,7 @@ python train.py \
 Train different model sizes:
 
 ```bash
-python train.py \
+uv run python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_tiny \
@@ -124,7 +129,7 @@ python train.py \
   --epochs 50 \
   --amp
 
-python train.py \
+uv run python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_medium \
@@ -132,7 +137,7 @@ python train.py \
   --epochs 100 \
   --amp
 
-python train.py \
+uv run python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_large \
@@ -145,7 +150,7 @@ python train.py \
 Architecture flags override the preset, so this is valid:
 
 ```bash
-python train.py \
+uv run python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_custom \
@@ -160,7 +165,7 @@ python train.py \
 Enable adversarial training after the reconstruction loss starts converging:
 
 ```bash
-python train.py \
+uv run python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_gan \
@@ -172,7 +177,7 @@ python train.py \
 Try the SDPA-based time attention variant:
 
 ```bash
-python train.py \
+uv run python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_v2attn \
@@ -182,14 +187,14 @@ python train.py \
 Compare the time-attention blocks directly:
 
 ```bash
-python compare_time_attention.py --device cuda
-python compare_time_attention.py --device cuda --v2_no_qk_norm --v2_no_rope
+uv run python compare_time_attention.py --device cuda
+uv run python compare_time_attention.py --device cuda --v2_no_qk_norm --v2_no_rope
 ```
 
 Track training with Trackio:
 
 ```bash
-python train.py \
+uv run python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_tracked \
@@ -203,7 +208,7 @@ python train.py \
 Trackio logs locally by default:
 
 ```bash
-trackio show --project fscnet
+uv run trackio show --project fscnet
 ```
 
 To send metrics to a hosted Hugging Face Space or self-hosted Trackio server,
@@ -215,8 +220,8 @@ add `--trackio_space_id username/space-name` or
 For a real narrowband file:
 
 ```bash
-python inference.py \
-  --checkpoint runs/fscnet_4k48k/last.pt \
+uv run python inference.py \
+  --checkpoint runs/fscnet_4k48k/last.safetensors \
   --input input_4k.wav \
   --output enhanced_48k.wav \
   --normalize_input
@@ -225,8 +230,8 @@ python inference.py \
 To simulate a 4 kHz input from a full-band file before enhancement:
 
 ```bash
-python inference.py \
-  --checkpoint runs/fscnet_4k48k/last.pt \
+uv run python inference.py \
+  --checkpoint runs/fscnet_4k48k/last.safetensors \
   --input clean_48k.wav \
   --output enhanced_from_simulated_4k.wav \
   --simulate_input_sr 4000
@@ -235,8 +240,8 @@ python inference.py \
 For long files, use chunking:
 
 ```bash
-python inference.py \
-  --checkpoint runs/fscnet_4k48k/last.pt \
+uv run python inference.py \
+  --checkpoint runs/fscnet_4k48k/last.safetensors \
   --input input_4k.wav \
   --output enhanced_48k.wav \
   --chunk_seconds 4 \
@@ -248,8 +253,8 @@ python inference.py \
 Export a trained checkpoint for a fixed input length:
 
 ```bash
-python export_to_onnx.py \
-  --checkpoint runs/fscnet_4k48k/last.pt \
+uv run python export_to_onnx.py \
+  --checkpoint runs/fscnet_4k48k/last.safetensors \
   --output runs/fscnet_4k48k/fscnet_1s.onnx \
   --sample_length 48000 \
   --verify

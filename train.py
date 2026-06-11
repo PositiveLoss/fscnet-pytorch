@@ -1,7 +1,7 @@
 """Train an FSC-Net style speech bandwidth extension model.
 
 Example:
-  python train.py \
+  uv run python train.py \
     --train_manifest train.jsonl --valid_manifest valid.jsonl \
     --input_sr 4000 --target_sr 48000 --epochs 100 --batch_size 8
 """
@@ -23,6 +23,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from fscnet_pytorch.audio import complex_to_ri, stft_complex
+from fscnet_pytorch.checkpoint import load_training_checkpoint, save_training_checkpoint
 from fscnet_pytorch.cli import option, run
 from fscnet_pytorch.config import (
     get_model_preset,
@@ -60,6 +61,7 @@ MODEL_OVERRIDE_FIELDS = (
 
 TrackMetricValue = int | float | str | bool | None
 TimeAttention = Literal["v1", "v2"]
+PrecisionMode = Literal["fp32", "fp16", "bf16"]
 
 
 class TrackioRun:
@@ -163,6 +165,25 @@ def cosine_warmup_lambda(total_steps: int, warmup_steps: int, min_lr_ratio: floa
     return fn
 
 
+def resolve_precision(
+    precision: PrecisionMode, amp: bool, device: torch.device
+) -> tuple[bool, torch.dtype | None, bool, str]:
+    """Return autocast/scaler settings for the requested training precision."""
+    if device.type != "cuda":
+        return False, None, False, "fp32"
+    if amp and precision == "fp32":
+        precision = "fp16"
+    if precision == "fp32":
+        return False, None, False, "fp32"
+    if precision == "fp16":
+        return True, torch.float16, True, "fp16"
+    if precision == "bf16":
+        if hasattr(torch.cuda, "is_bf16_supported") and not torch.cuda.is_bf16_supported():
+            raise RuntimeError("CUDA bf16 training was requested, but this GPU does not support bf16.")
+        return True, torch.bfloat16, False, "bf16"
+    raise ValueError(f"Unknown precision={precision!r}")
+
+
 def save_checkpoint(
     path: Path,
     model: FSCNet,
@@ -176,24 +197,20 @@ def save_checkpoint(
     optimizer_d: torch.optim.Optimizer | None = None,
     scheduler_d=None,
 ) -> None:
-    payload = {
-        "model": model.state_dict(),
-        "config": model.cfg.to_dict(),
-        "windows": tuple(windows),
-        "epoch": epoch,
-        "step": step,
-        "args": vars(args),
-        "optimizer_g": optimizer_g.state_dict(),
-        "scheduler_g": scheduler_g.state_dict() if scheduler_g is not None else None,
-    }
-    if discriminators is not None:
-        payload["discriminators"] = discriminators.state_dict()
-    if optimizer_d is not None:
-        payload["optimizer_d"] = optimizer_d.state_dict()
-    if scheduler_d is not None:
-        payload["scheduler_d"] = scheduler_d.state_dict()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(payload, path)
+    save_training_checkpoint(
+        path,
+        model=model,
+        config=model.cfg.to_dict(),
+        windows=tuple(windows),
+        epoch=epoch,
+        step=step,
+        args=vars(args),
+        optimizer_g=optimizer_g,
+        scheduler_g=scheduler_g,
+        discriminators=discriminators,
+        optimizer_d=optimizer_d,
+        scheduler_d=scheduler_d,
+    )
 
 
 @torch.no_grad()
@@ -202,7 +219,8 @@ def validate(
     loss_fn: StageReconstructionLoss,
     loader: DataLoader,
     device: torch.device,
-    amp: bool,
+    autocast_enabled: bool,
+    autocast_dtype: torch.dtype | None,
 ) -> dict[str, float]:
     model.eval()
     total = 0.0
@@ -210,7 +228,11 @@ def validate(
     for batch in tqdm(loader, desc="valid", leave=False):
         lr = batch["lr"].to(device)
         hr = batch["hr"].to(device)
-        with torch.autocast(device_type="cuda", enabled=amp and device.type == "cuda"):
+        with torch.autocast(
+            device_type="cuda",
+            enabled=autocast_enabled and device.type == "cuda",
+            dtype=autocast_dtype,
+        ):
             pred_stages, input_ri = model(lr, return_all=True)
             target_ri = complex_to_ri(
                 stft_complex(
@@ -331,6 +353,11 @@ def main(
         5.0, "--clip-grad-norm", "--clip_grad_norm", help="gradient clipping", min=0.0
     ),
     amp: bool = option(False, "--amp", help="mixed precision on CUDA"),
+    precision: PrecisionMode = option(
+        "fp32",
+        "--precision",
+        help="training precision: fp32, fp16, or bf16; --amp maps fp32 to fp16",
+    ),
     trackio: bool = option(False, "--trackio", help="enable Trackio logging"),
     trackio_project: str = option(
         "fscnet", "--trackio-project", "--trackio_project", help="Trackio project name"
@@ -434,6 +461,12 @@ def main(
     )
     if args.batch_size is None:
         args.batch_size = get_model_preset(args.model_size).suggested_batch_size
+    autocast_enabled, autocast_dtype, scaler_enabled, precision_name = resolve_precision(
+        args.precision, args.amp, device
+    )
+    args.precision = precision_name
+    if args.amp and precision_name != "fp16":
+        print(f"--amp ignored because --precision {precision_name} was requested")
     parsed_mrstft_fft_sizes = tuple(
         int(x) for x in args.mrstft_fft_sizes.split(",") if x
     )
@@ -520,7 +553,7 @@ def main(
     start_epoch = 0
     global_step = 0
     if args.resume:
-        ckpt = torch.load(args.resume, map_location="cpu")
+        ckpt = load_training_checkpoint(args.resume)
         model.load_state_dict(ckpt["model"])
         optimizer_g.load_state_dict(ckpt["optimizer_g"])
         if ckpt.get("scheduler_g"):
@@ -541,7 +574,7 @@ def main(
         encoding="utf-8",
     )
 
-    scaler = GradScaler("cuda", enabled=args.amp and device.type == "cuda")
+    scaler = GradScaler("cuda", enabled=scaler_enabled and device.type == "cuda")
     model.train()
     tracker = init_trackio(args, cfg.to_dict(), windows, parameter_count)
 
@@ -552,7 +585,9 @@ def main(
             hr = batch["hr"].to(device, non_blocking=True)
 
             with torch.autocast(
-                device_type="cuda", enabled=args.amp and device.type == "cuda"
+                device_type="cuda",
+                enabled=autocast_enabled and device.type == "cuda",
+                dtype=autocast_dtype,
             ):
                 pred_stages, input_ri = model(lr, return_all=True)
                 target_ri = complex_to_ri(
@@ -572,7 +607,9 @@ def main(
                 set_requires_grad(discriminators_active, True)
                 optimizer_d.zero_grad(set_to_none=True)
                 with torch.autocast(
-                    device_type="cuda", enabled=args.amp and device.type == "cuda"
+                    device_type="cuda",
+                    enabled=autocast_enabled and device.type == "cuda",
+                    dtype=autocast_dtype,
                 ):
                     d_loss = lr.new_tensor(0.0)
                     for disc, fake_wav, real_wav in zip(
@@ -598,7 +635,9 @@ def main(
 
             optimizer_g.zero_grad(set_to_none=True)
             with torch.autocast(
-                device_type="cuda", enabled=args.amp and device.type == "cuda"
+                device_type="cuda",
+                enabled=autocast_enabled and device.type == "cuda",
+                dtype=autocast_dtype,
             ):
                 loss_g = recon_loss
                 adv_val = lr.new_tensor(0.0)
@@ -666,7 +705,9 @@ def main(
                 tracker.log(train_metrics)
 
         if valid_loader is not None and (epoch + 1) % args.valid_every == 0:
-            metrics = validate(model, recon_loss_fn, valid_loader, device, args.amp)
+            metrics = validate(
+                model, recon_loss_fn, valid_loader, device, autocast_enabled, autocast_dtype
+            )
             print(metrics)
             if tracker is not None:
                 tracker.log(
@@ -679,7 +720,7 @@ def main(
 
         if (epoch + 1) % args.save_every == 0:
             save_checkpoint(
-                out_path / f"checkpoint_epoch_{epoch + 1:04d}.pt",
+                out_path / f"checkpoint_epoch_{epoch + 1:04d}.safetensors",
                 model,
                 optimizer_g,
                 scheduler_g,
@@ -692,7 +733,7 @@ def main(
                 scheduler_d=scheduler_d,
             )
             save_checkpoint(
-                out_path / "last.pt",
+                out_path / "last.safetensors",
                 model,
                 optimizer_g,
                 scheduler_g,

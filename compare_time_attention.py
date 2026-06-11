@@ -1,7 +1,7 @@
 """Compare FSC-Net time attention implementations.
 
 Example:
-  python compare_time_attention.py --device cuda --batch_size 2 --frames 126
+  uv run python compare_time_attention.py --device cuda --batch_size 2 --frames 126
 """
 
 from __future__ import annotations

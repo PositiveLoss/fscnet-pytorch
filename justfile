@@ -155,7 +155,7 @@ train-16k48 train_manifest valid_manifest="" out_dir="runs/fscnet_16k48k" model_
       --target_sr 48000 \
       --amp
 
-# Run inference. Example: just infer runs/fscnet/last.pt input.wav output.wav
+# Run inference. Example: just infer runs/fscnet/last.safetensors input.wav output.wav
 infer checkpoint input output:
     uv run python inference.py \
       --checkpoint {{checkpoint}} \

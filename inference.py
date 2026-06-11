@@ -1,18 +1,36 @@
 """Run FSC-Net bandwidth extension inference.
 
 Example:
-  python inference.py --checkpoint runs/fscnet/last.pt --input noisy_4k.wav --output enhanced_48k.wav
+  uv run python inference.py --checkpoint runs/fscnet/last.safetensors --input noisy_4k.wav --output enhanced_48k.wav
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import torch
 
 from fscnet_pytorch.audio import load_audio, match_length, resample_audio, save_audio
+from fscnet_pytorch.checkpoint import load_training_checkpoint
 from fscnet_pytorch.cli import option, run
 from fscnet_pytorch.model import FSCNet, FSCNetConfig
+
+PrecisionMode = Literal["fp32", "bf16"]
+
+
+def resolve_precision(
+    precision: PrecisionMode, device: torch.device
+) -> tuple[bool, torch.dtype | None]:
+    if precision == "fp32" or device.type != "cuda":
+        return False, None
+    if precision == "bf16":
+        if hasattr(torch.cuda, "is_bf16_supported") and not torch.cuda.is_bf16_supported():
+            raise RuntimeError(
+                "CUDA bf16 inference was requested, but this GPU does not support bf16."
+            )
+        return True, torch.bfloat16
+    raise ValueError(f"Unknown precision={precision!r}")
 
 
 def enhance_chunked(
@@ -64,6 +82,11 @@ def main(
     device: str = option(
         "cuda" if torch.cuda.is_available() else "cpu", "--device", help="torch device"
     ),
+    precision: PrecisionMode = option(
+        "fp32",
+        "--precision",
+        help="inference precision: fp32 or bf16",
+    ),
     simulate_input_sr: int = option(
         0,
         "--simulate-input-sr",
@@ -103,7 +126,8 @@ def main(
     if torch_num_threads > 0:
         torch.set_num_threads(torch_num_threads)
     torch_device = torch.device(device)
-    ckpt = torch.load(checkpoint, map_location="cpu")
+    autocast_enabled, autocast_dtype = resolve_precision(precision, torch_device)
+    ckpt = load_training_checkpoint(checkpoint)
     cfg = FSCNetConfig.from_dict(ckpt["config"])
     model = FSCNet(cfg).to(torch_device)
     model.load_state_dict(ckpt["model"], strict=True)
@@ -125,7 +149,11 @@ def main(
         scale = wav.abs().max().clamp_min(1.0e-8)
         wav = wav / scale
 
-    with torch.no_grad():
+    with torch.no_grad(), torch.autocast(
+        device_type="cuda",
+        enabled=autocast_enabled and torch_device.type == "cuda",
+        dtype=autocast_dtype,
+    ):
         wav_device = wav.to(torch_device)
         enhanced = enhance_chunked(
             model, wav_device, chunk_seconds, overlap_seconds

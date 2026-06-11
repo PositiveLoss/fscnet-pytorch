@@ -1,8 +1,8 @@
 """Export an FSC-Net checkpoint to ONNX.
 
 Example:
-  python export_to_onnx.py \
-    --checkpoint runs/fscnet_4k48k/last.pt \
+  uv run python export_to_onnx.py \
+    --checkpoint runs/fscnet_4k48k/last.safetensors \
     --output runs/fscnet_4k48k/fscnet.onnx \
     --sample_length 48000 \
     --verify
@@ -19,6 +19,7 @@ import onnxruntime as ort
 import torch
 import torch.nn.functional as F
 
+from fscnet_pytorch.checkpoint import load_training_checkpoint
 from fscnet_pytorch.cli import option, run
 from fscnet_pytorch.model import FSCNet, FSCNetConfig, SpectralTransform
 
@@ -98,7 +99,7 @@ def enable_export_fft(model: FSCNet) -> None:
 
 
 def load_model(checkpoint: str, device: torch.device) -> FSCNet:
-    ckpt = torch.load(checkpoint, map_location="cpu")
+    ckpt = load_training_checkpoint(checkpoint)
     cfg = FSCNetConfig.from_dict(ckpt["config"])
     model = FSCNet(cfg)
     model.load_state_dict(ckpt["model"], strict=True)

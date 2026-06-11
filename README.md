@@ -127,6 +127,8 @@ Training auto-resumes from `OUT_DIR/last.safetensors` when it exists; pass
 checkpoint.
 
 Validation runs after each epoch by default when `--valid_manifest` is set.
+Use `--eval-steps N` to validate every N optimizer steps instead of waiting
+for epoch-end validation.
 It reports reconstruction loss and Log-Spectral Distance (LSD), one of the
 FSC-Net paper's objective evaluation metrics. PESQ is attempted when the
 optional `pesq` package is available. Missing optional metric dependencies are

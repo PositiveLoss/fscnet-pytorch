@@ -258,7 +258,9 @@ def maybe_pesq_batch(
     pesq_fn = state.get("pesq")
     if pesq_fn is None:
         if not state.get("pesq_note_printed"):
-            print(f"PESQ evaluation unavailable: {state.get('pesq_error', 'not installed')}")
+            print(
+                f"PESQ evaluation unavailable: {state.get('pesq_error', 'not installed')}"
+            )
             state["pesq_note_printed"] = True
         return 0.0, 0
 
@@ -321,8 +323,13 @@ def resolve_precision(
     if precision == "fp16":
         return True, torch.float16, True, "fp16"
     if precision == "bf16":
-        if hasattr(torch.cuda, "is_bf16_supported") and not torch.cuda.is_bf16_supported():
-            raise RuntimeError("CUDA bf16 training was requested, but this GPU does not support bf16.")
+        if (
+            hasattr(torch.cuda, "is_bf16_supported")
+            and not torch.cuda.is_bf16_supported()
+        ):
+            raise RuntimeError(
+                "CUDA bf16 training was requested, but this GPU does not support bf16."
+            )
         return True, torch.bfloat16, False, "bf16"
     raise ValueError(f"Unknown precision={precision!r}")
 
@@ -429,6 +436,86 @@ def validate(
     if pesq_count > 0:
         metrics["valid_pesq"] = total_pesq / pesq_count
     return metrics
+
+
+def run_validation(
+    *,
+    model: FSCNet,
+    recon_loss_fn: StageReconstructionLoss,
+    valid_loader: DataLoader,
+    device: torch.device,
+    autocast_enabled: bool,
+    autocast_dtype: torch.dtype | None,
+    optional_eval_metrics: OptionalMetricState,
+    tracker: TrackioRun | None,
+    epoch: int,
+    global_step: int,
+    args: SimpleNamespace,
+    out_path: Path,
+    optimizer_g: torch.optim.Optimizer,
+    scheduler_g,
+    windows: Sequence[int],
+    best_valid_recon_loss: float,
+    best_metrics_path: Path,
+    discriminators: nn.Module | None = None,
+    optimizer_d: torch.optim.Optimizer | None = None,
+    scheduler_d=None,
+) -> float:
+    metrics = validate(
+        model,
+        recon_loss_fn,
+        valid_loader,
+        device,
+        autocast_enabled,
+        autocast_dtype,
+        optional_eval_metrics,
+    )
+    print(metrics)
+    if tracker is not None:
+        valid_metrics: dict[str, TrackMetricValue] = {
+            "step": global_step,
+            "epoch": epoch + 1,
+        }
+        for key, value in metrics.items():
+            valid_metrics[f"valid/{key.removeprefix('valid_')}"] = value
+        tracker.log(valid_metrics)
+    valid_recon_loss = metrics["valid_recon_loss"]
+    if args.save_best_checkpoint and valid_recon_loss < best_valid_recon_loss:
+        best_valid_recon_loss = valid_recon_loss
+        save_checkpoint(
+            out_path / "best.safetensors",
+            model,
+            optimizer_g,
+            scheduler_g,
+            epoch,
+            global_step,
+            args,
+            windows,
+            discriminators=discriminators,
+            optimizer_d=optimizer_d,
+            scheduler_d=scheduler_d,
+        )
+        best_metrics_path.write_text(
+            json.dumps(
+                {
+                    "epoch": epoch + 1,
+                    "step": global_step,
+                    "valid_recon_loss": best_valid_recon_loss,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        if tracker is not None:
+            tracker.log(
+                {
+                    "step": global_step,
+                    "epoch": epoch + 1,
+                    "checkpoint/best_epoch": epoch + 1,
+                    "checkpoint/best_valid_recon_loss": best_valid_recon_loss,
+                }
+            )
+    return best_valid_recon_loss
 
 
 def main(
@@ -620,6 +707,13 @@ def main(
     valid_every: int = option(
         1, "--valid-every", "--valid_every", help="validate every N epochs", min=1
     ),
+    eval_steps: int = option(
+        0,
+        "--eval-steps",
+        "--eval_steps",
+        help="validate every N optimizer steps; 0 keeps epoch-based validation",
+        min=0,
+    ),
     eval_metrics: bool = option(
         True,
         "--eval-metrics/--no-eval-metrics",
@@ -670,8 +764,8 @@ def main(
     args.time_attention_rope = cfg.time_attention_rope
     if args.batch_size is None:
         args.batch_size = get_model_preset(args.model_size).suggested_batch_size
-    autocast_enabled, autocast_dtype, scaler_enabled, precision_name = resolve_precision(
-        args.precision, args.amp, device
+    autocast_enabled, autocast_dtype, scaler_enabled, precision_name = (
+        resolve_precision(args.precision, args.amp, device)
     )
     args.precision = precision_name
     reset_activated_kernel_names()
@@ -938,62 +1032,61 @@ def main(
             if not printed_kernel_runtime:
                 print_runtime_kernel_activations()
                 printed_kernel_runtime = True
-
-        if valid_loader is not None and (epoch + 1) % args.valid_every == 0:
-            metrics = validate(
-                model,
-                recon_loss_fn,
-                valid_loader,
-                device,
-                autocast_enabled,
-                autocast_dtype,
-                optional_eval_metrics,
-            )
-            print(metrics)
-            if tracker is not None:
-                valid_metrics: dict[str, TrackMetricValue] = {
-                    "step": global_step,
-                    "epoch": epoch + 1,
-                }
-                for key, value in metrics.items():
-                    valid_metrics[f"valid/{key.removeprefix('valid_')}"] = value
-                tracker.log(valid_metrics)
-            valid_recon_loss = metrics["valid_recon_loss"]
-            if args.save_best_checkpoint and valid_recon_loss < best_valid_recon_loss:
-                best_valid_recon_loss = valid_recon_loss
-                save_checkpoint(
-                    out_path / "best.safetensors",
-                    model,
-                    optimizer_g,
-                    scheduler_g,
-                    epoch,
-                    global_step,
-                    args,
-                    windows,
+            if (
+                valid_loader is not None
+                and args.eval_steps > 0
+                and global_step % args.eval_steps == 0
+            ):
+                best_valid_recon_loss = run_validation(
+                    model=model,
+                    recon_loss_fn=recon_loss_fn,
+                    valid_loader=valid_loader,
+                    device=device,
+                    autocast_enabled=autocast_enabled,
+                    autocast_dtype=autocast_dtype,
+                    optional_eval_metrics=optional_eval_metrics,
+                    tracker=tracker,
+                    epoch=epoch,
+                    global_step=global_step,
+                    args=args,
+                    out_path=out_path,
+                    optimizer_g=optimizer_g,
+                    scheduler_g=scheduler_g,
+                    windows=windows,
+                    best_valid_recon_loss=best_valid_recon_loss,
+                    best_metrics_path=best_metrics_path,
                     discriminators=discriminators,
                     optimizer_d=optimizer_d,
                     scheduler_d=scheduler_d,
                 )
-                best_metrics_path.write_text(
-                    json.dumps(
-                        {
-                            "epoch": epoch + 1,
-                            "step": global_step,
-                            "valid_recon_loss": best_valid_recon_loss,
-                        },
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
-                if tracker is not None:
-                    tracker.log(
-                        {
-                            "step": global_step,
-                            "epoch": epoch + 1,
-                            "checkpoint/best_epoch": epoch + 1,
-                            "checkpoint/best_valid_recon_loss": best_valid_recon_loss,
-                        }
-                    )
+
+        if (
+            valid_loader is not None
+            and args.eval_steps <= 0
+            and (epoch + 1) % args.valid_every == 0
+        ):
+            best_valid_recon_loss = run_validation(
+                model=model,
+                recon_loss_fn=recon_loss_fn,
+                valid_loader=valid_loader,
+                device=device,
+                autocast_enabled=autocast_enabled,
+                autocast_dtype=autocast_dtype,
+                optional_eval_metrics=optional_eval_metrics,
+                tracker=tracker,
+                epoch=epoch,
+                global_step=global_step,
+                args=args,
+                out_path=out_path,
+                optimizer_g=optimizer_g,
+                scheduler_g=scheduler_g,
+                windows=windows,
+                best_valid_recon_loss=best_valid_recon_loss,
+                best_metrics_path=best_metrics_path,
+                discriminators=discriminators,
+                optimizer_d=optimizer_d,
+                scheduler_d=scheduler_d,
+            )
 
         if (epoch + 1) % args.save_every == 0:
             save_checkpoint(

@@ -47,7 +47,9 @@ def save_training_checkpoint(
         "epoch": epoch,
         "step": step,
         "args": args,
-        "optimizer_g": _extract_tensors(optimizer_g.state_dict(), "optimizer_g", tensors),
+        "optimizer_g": _extract_tensors(
+            optimizer_g.state_dict(), "optimizer_g", tensors
+        ),
         "scheduler_g": scheduler_g.state_dict() if scheduler_g is not None else None,
         "optimizer_d": (
             _extract_tensors(optimizer_d.state_dict(), "optimizer_d", tensors)
@@ -115,9 +117,7 @@ def _prefixed_state_dict(
     }
 
 
-def _extract_tensors(
-    obj: Any, prefix: str, tensors: dict[str, torch.Tensor]
-) -> Any:
+def _extract_tensors(obj: Any, prefix: str, tensors: dict[str, torch.Tensor]) -> Any:
     if isinstance(obj, torch.Tensor):
         key = f"{prefix}.{len(tensors)}"
         tensors[key] = obj.detach().cpu().contiguous()
@@ -130,7 +130,9 @@ def _extract_tensors(
             ]
         }
     if isinstance(obj, tuple):
-        return {"__tuple__": [_extract_tensors(value, prefix, tensors) for value in obj]}
+        return {
+            "__tuple__": [_extract_tensors(value, prefix, tensors) for value in obj]
+        }
     if isinstance(obj, list):
         return [_extract_tensors(value, prefix, tensors) for value in obj]
     return obj

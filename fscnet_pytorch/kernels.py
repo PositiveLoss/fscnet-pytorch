@@ -105,9 +105,7 @@ def make_progressive_targets_pyptx(
                 window,
                 eps,
                 _dtype_name(input_c.dtype),
-            )(
-                input_c, target_c
-            )
+            )(input_c, target_c)
             for window in windows
         ]
         _mark_kernel_active("pyptx_progressive_targets")
@@ -348,7 +346,9 @@ class _GlobalLayerNormFn(torch.autograd.Function):
         x, weight, mean, rstd = ctx.saved_tensors
         bsz, channels, freq, frames = x.shape
         n = float(channels * freq * frames)
-        compute_dtype = torch.float32 if x.dtype in (torch.float16, torch.bfloat16) else x.dtype
+        compute_dtype = (
+            torch.float32 if x.dtype in (torch.float16, torch.bfloat16) else x.dtype
+        )
 
         mean_v = mean.view(bsz, 1, 1, 1)
         rstd_v = rstd.view(bsz, 1, 1, 1)
@@ -368,9 +368,7 @@ class _GlobalLayerNormFn(torch.autograd.Function):
         if ctx.needs_input_grad[0]:
             grad_normed = grad_out_compute * weight_v
             sum_grad = grad_normed.sum(dim=(1, 2, 3), keepdim=True)
-            sum_grad_xhat = (grad_normed * x_hat).sum(
-                dim=(1, 2, 3), keepdim=True
-            )
+            sum_grad_xhat = (grad_normed * x_hat).sum(dim=(1, 2, 3), keepdim=True)
             grad_x = (grad_normed - sum_grad / n - x_hat * sum_grad_xhat / n) * rstd_v
             grad_x = grad_x.to(x.dtype)
 
@@ -737,7 +735,7 @@ def _rope_qk_norm_kernel(
         ptx.inst.sub.u32(head, tmp, head_mul)
         row = head_base
 
-        vec_base = (((row * heads + head) * frames + frame) * dim_head)
+        vec_base = ((row * heads + head) * frames + frame) * dim_head
         pair_idx = tid
 
         sin_val = reg.scalar(f32)

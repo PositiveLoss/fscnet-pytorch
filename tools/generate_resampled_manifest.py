@@ -235,7 +235,9 @@ def process_file(item: WorkItem) -> WorkResult:
             f"[{progress_label(item.index, item.total)}] reused {lr_path}",
         )
 
-    LOGGER.info("[%s] Processing %s", progress_label(item.index, item.total), item.source)
+    LOGGER.info(
+        "[%s] Processing %s", progress_label(item.index, item.total), item.source
+    )
     audio, source_sr = load_audio(item.source, item.channels)
     source_duration = audio.shape[0] / float(source_sr)
     skip_result = duration_skip_result(item, source_duration)
@@ -314,10 +316,7 @@ def duration_skip_result(item: WorkItem, duration: float) -> WorkResult | None:
             ),
             skipped=True,
         )
-    if (
-        item.max_duration_seconds is not None
-        and duration > item.max_duration_seconds
-    ):
+    if item.max_duration_seconds is not None and duration > item.max_duration_seconds:
         return WorkResult(
             item.index,
             None,
@@ -544,10 +543,7 @@ def main(
         raise ValueError("--channels must be 1 or 2")
     if max_duration_seconds == 0.0:
         max_duration_seconds = None
-    if (
-        max_duration_seconds is not None
-        and max_duration_seconds < min_duration_seconds
-    ):
+    if max_duration_seconds is not None and max_duration_seconds < min_duration_seconds:
         raise ValueError("--max-duration-seconds must be >= --min-duration-seconds")
 
     input_dir = input_dir.expanduser().resolve()
@@ -562,7 +558,9 @@ def main(
     )
     if not extension_values:
         raise ValueError("--extensions must include at least one extension")
-    LOGGER.info("Scanning %s for extensions: %s", input_dir, ", ".join(extension_values))
+    LOGGER.info(
+        "Scanning %s for extensions: %s", input_dir, ", ".join(extension_values)
+    )
 
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     LOGGER.info("Writing generated audio under %s", out_dir)

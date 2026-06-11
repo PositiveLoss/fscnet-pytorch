@@ -81,7 +81,9 @@ class ModelArchitectureTest(unittest.TestCase):
 
         self.assertEqual(len(model.stage_heads), 2)
         self.assertTrue(hasattr(model, "ffc_out"))
-        self.assertTrue(all(isinstance(head, DepthwiseConv2dHead) for head in model.stage_heads))
+        self.assertTrue(
+            all(isinstance(head, DepthwiseConv2dHead) for head in model.stage_heads)
+        )
         self.assertGreater(count_parameters(model), 0)
 
     def test_forward_returns_one_progressive_output_per_block(self) -> None:

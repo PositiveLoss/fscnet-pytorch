@@ -102,6 +102,16 @@ uv run python train.py --list_model_sizes
 | `medium` | 2.279 M | 6 | 64 | 96 | v2 bare SDPA | 2 |
 | `large` | 4.650 M | 6 | 96 | 128 | v2 bare SDPA | 1 |
 
+Estimate forward GMACs for a preset or custom architecture:
+
+```bash
+uv run python -m tools.measure_gmacs --model_size compact --seconds 2
+uv run python -m tools.measure_gmacs --model_size compact --channels 60 --rnn_hidden 80
+```
+
+The script counts Conv/Linear/LSTM/attention MACs with module hooks and reports
+FFT/iFFT as a separate estimate.
+
 4 kHz to 48 kHz:
 
 ```bash

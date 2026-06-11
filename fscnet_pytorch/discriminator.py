@@ -130,7 +130,9 @@ def _as_waveform_channels(waveform: torch.Tensor) -> torch.Tensor:
     if waveform.ndim == 2:
         return waveform.unsqueeze(1)
     if waveform.ndim != 3:
-        raise ValueError(f"Expected waveform [B,T] or [B,C,T], got {tuple(waveform.shape)}")
+        raise ValueError(
+            f"Expected waveform [B,T] or [B,C,T], got {tuple(waveform.shape)}"
+        )
     return waveform
 
 

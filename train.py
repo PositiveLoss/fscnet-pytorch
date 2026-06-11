@@ -182,7 +182,9 @@ def train_stage_loss_summary(logs: dict[str, float]) -> str:
     stage_items = sorted(
         (key, value) for key, value in logs.items() if key.startswith("stage_")
     )
-    return " ".join(f"{key.removesuffix('_loss')}={value:.4f}" for key, value in stage_items)
+    return " ".join(
+        f"{key.removesuffix('_loss')}={value:.4f}" for key, value in stage_items
+    )
 
 
 def gradients_are_finite(parameters: Iterable[torch.nn.Parameter]) -> bool:
@@ -1139,9 +1141,8 @@ def main(
             if not printed_kernel_runtime:
                 print_runtime_kernel_activations()
                 printed_kernel_runtime = True
-            if (
-                args.train_log_every > 0
-                and (global_step == 1 or global_step % args.train_log_every == 0)
+            if args.train_log_every > 0 and (
+                global_step == 1 or global_step % args.train_log_every == 0
             ):
                 stage_losses = train_stage_loss_summary(logs)
                 print(

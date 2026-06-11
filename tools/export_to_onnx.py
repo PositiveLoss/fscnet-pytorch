@@ -178,9 +178,7 @@ def verify_onnx(
 
 
 def main(
-    checkpoint: Path = option(
-        ..., "--checkpoint", help="checkpoint from train.py"
-    ),
+    checkpoint: Path = option(..., "--checkpoint", help="checkpoint from train.py"),
     output: Path = option(..., "--output", help="output .onnx path"),
     sample_length: int = option(
         ...,

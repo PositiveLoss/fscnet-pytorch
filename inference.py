@@ -25,7 +25,10 @@ def resolve_precision(
     if precision == "fp32" or device.type != "cuda":
         return False, None
     if precision == "bf16":
-        if hasattr(torch.cuda, "is_bf16_supported") and not torch.cuda.is_bf16_supported():
+        if (
+            hasattr(torch.cuda, "is_bf16_supported")
+            and not torch.cuda.is_bf16_supported()
+        ):
             raise RuntimeError(
                 "CUDA bf16 inference was requested, but this GPU does not support bf16."
             )
@@ -149,10 +152,13 @@ def main(
         scale = wav.abs().max().clamp_min(1.0e-8)
         wav = wav / scale
 
-    with torch.no_grad(), torch.autocast(
-        device_type="cuda",
-        enabled=autocast_enabled and torch_device.type == "cuda",
-        dtype=autocast_dtype,
+    with (
+        torch.no_grad(),
+        torch.autocast(
+            device_type="cuda",
+            enabled=autocast_enabled and torch_device.type == "cuda",
+            dtype=autocast_dtype,
+        ),
     ):
         wav_device = wav.to(torch_device)
         enhanced = enhance_chunked(

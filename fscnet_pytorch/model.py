@@ -280,12 +280,8 @@ class IntraFrameRNN(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         bsz, channels, freq, frames = x.shape
-        seq = self.unfold(x).reshape(
-            bsz, self.unfold_channels, freq, frames
-        )
-        seq = seq.permute(0, 3, 2, 1).reshape(
-            bsz * frames, freq, self.unfold_channels
-        )
+        seq = self.unfold(x).reshape(bsz, self.unfold_channels, freq, frames)
+        seq = seq.permute(0, 3, 2, 1).reshape(bsz * frames, freq, self.unfold_channels)
         y, _ = self.rnn(self.norm(seq))
         y = y.transpose(1, 2)
         y = self.dropout(self.proj(y)).transpose(1, 2)
@@ -476,10 +472,7 @@ class FSCNet(nn.Module):
         self.blocks = nn.ModuleList([TFFFCBlock(cfg) for _ in range(cfg.num_blocks)])
         self.ffc_out = ResidualFFC(cfg.channels, cfg.ffc_ratio, cfg.dropout)
         self.stage_heads = nn.ModuleList(
-            [
-                DepthwiseConv2dHead(cfg.channels, in_ch)
-                for _ in range(cfg.num_blocks)
-            ]
+            [DepthwiseConv2dHead(cfg.channels, in_ch) for _ in range(cfg.num_blocks)]
         )
 
     def encode_input(self, wav: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:

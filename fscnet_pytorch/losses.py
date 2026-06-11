@@ -10,6 +10,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from .audio import istft_complex, ri_to_complex, stft_complex
+from .kernels import make_progressive_targets_pyptx
 from .model import FSCNetConfig
 
 
@@ -40,6 +41,10 @@ def make_progressive_targets(
     and the target phase is the clean HR phase. W=1 recovers the exact HR
     complex spectrogram.
     """
+    kernel_targets = make_progressive_targets_pyptx(input_ri, target_ri, windows, eps)
+    if kernel_targets is not None:
+        return kernel_targets
+
     x = ri_to_complex(input_ri)
     y = ri_to_complex(target_ri)
     mag_x = x.abs()

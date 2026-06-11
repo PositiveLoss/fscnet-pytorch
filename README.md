@@ -116,6 +116,27 @@ python infer_fscnet.py \
   --overlap_seconds 0.5
 ```
 
+## ONNX export
+
+Export a trained checkpoint for a fixed input length:
+
+```bash
+python export_fscnet_onnx.py \
+  --checkpoint runs/fscnet_4k48k/last.pt \
+  --output runs/fscnet_4k48k/fscnet_1s.onnx \
+  --sample_length 48000 \
+  --verify
+```
+
+The default exporter writes the enhanced waveform output. Use
+`--output_kind spectrogram` to export the final complex spectrum as
+`[batch, 2, freq, frames]` instead.
+
+By default the script uses opset 25, the newest opset verified here with
+ONNX Runtime for this model. ONNX 1.21 reports opset 26 as latest, but the
+PyTorch 2.12 exporter currently leaves the fused attention op at an invalid
+opset-18 form when asked to convert this graph to opset 26.
+
 ## Notes
 
 - The default `--num_blocks 5` matches the five progressive windows shown in the demo: `257,65,17,5,1`.

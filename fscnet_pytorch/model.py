@@ -61,6 +61,23 @@ class GlobalLayerNorm(nn.Module):
         return (x - mean) * torch.rsqrt(var + self.eps) * self.weight + self.bias
 
 
+class SingleGroupNorm(nn.Module):
+    """GroupNorm(num_groups=1) expressed with primitive tensor ops."""
+
+    def __init__(self, channels: int, eps: float = 1.0e-5) -> None:
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(channels))
+        self.bias = nn.Parameter(torch.zeros(channels))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        mean = x.mean(dim=(1, 2, 3), keepdim=True)
+        var = x.var(dim=(1, 2, 3), keepdim=True, unbiased=False)
+        weight = self.weight.view(1, -1, 1, 1)
+        bias = self.bias.view(1, -1, 1, 1)
+        return (x - mean) * torch.rsqrt(var + self.eps) * weight + bias
+
+
 class SpectralTransform(nn.Module):
     """Global branch used inside Fast Fourier Convolution.
 
@@ -73,21 +90,84 @@ class SpectralTransform(nn.Module):
         super().__init__()
         if channels <= 0:
             raise ValueError("SpectralTransform requires channels > 0")
+        self.export_manual_fft = False
         self.net = nn.Sequential(
             nn.Conv2d(channels * 2, channels * 2, kernel_size=1),
-            nn.GroupNorm(1, channels * 2),
+            SingleGroupNorm(channels * 2),
             nn.SiLU(),
             nn.Conv2d(channels * 2, channels * 2, kernel_size=1),
         )
 
+    @staticmethod
+    def _dft_basis(
+        size: int, freqs: int | None, device: torch.device, dtype: torch.dtype
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        freqs = size if freqs is None else freqs
+        n = torch.arange(size, device=device, dtype=dtype)
+        k = torch.arange(freqs, device=device, dtype=dtype)
+        angle = 2.0 * torch.pi * n[:, None] * k[None, :] / float(size)
+        scale = float(size) ** -0.5
+        return torch.cos(angle) * scale, torch.sin(angle) * scale
+
+    @classmethod
+    def _manual_rfft2(cls, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        height, width = x.shape[-2], x.shape[-1]
+        dtype = x.dtype if x.dtype in (torch.float32, torch.float64) else torch.float32
+        x = x.to(dtype)
+        cos_w, sin_w = cls._dft_basis(width, width // 2 + 1, x.device, dtype)
+        real = torch.einsum("bchw,wk->bchk", x, cos_w)
+        imag = -torch.einsum("bchw,wk->bchk", x, sin_w)
+
+        cos_h, sin_h = cls._dft_basis(height, None, x.device, dtype)
+        out_real = torch.einsum("bchk,hf->bcfk", real, cos_h) + torch.einsum(
+            "bchk,hf->bcfk", imag, sin_h
+        )
+        out_imag = torch.einsum("bchk,hf->bcfk", imag, cos_h) - torch.einsum(
+            "bchk,hf->bcfk", real, sin_h
+        )
+        return out_real, out_imag
+
+    @classmethod
+    def _manual_irfft2(
+        cls, real: torch.Tensor, imag: torch.Tensor, height: int, width: int
+    ) -> torch.Tensor:
+        dtype = real.dtype
+        cos_h, sin_h = cls._dft_basis(height, None, real.device, dtype)
+        time_real = torch.einsum("bcfk,hf->bchk", real, cos_h) - torch.einsum(
+            "bcfk,hf->bchk", imag, sin_h
+        )
+        time_imag = torch.einsum("bcfk,hf->bchk", real, sin_h) + torch.einsum(
+            "bcfk,hf->bchk", imag, cos_h
+        )
+
+        freqs = width // 2 + 1
+        cos_w, sin_w = cls._dft_basis(width, freqs, real.device, dtype)
+        weights = torch.ones(freqs, device=real.device, dtype=dtype)
+        if freqs > 1:
+            end = freqs - 1 if width % 2 == 0 else freqs
+            if end > 1:
+                weights[1:end] = 2.0
+        time_real = time_real * weights.view(1, 1, 1, -1)
+        time_imag = time_imag * weights.view(1, 1, 1, -1)
+        return torch.einsum("bchk,wk->bchw", time_real, cos_w) - torch.einsum(
+            "bchk,wk->bchw", time_imag, sin_w
+        )
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         height, width = x.shape[-2], x.shape[-1]
-        z = torch.fft.rfft2(x.float(), norm="ortho")
-        z_ri = torch.cat((z.real, z.imag), dim=1).to(dtype=x.dtype)
+        if self.export_manual_fft:
+            real, imag = self._manual_rfft2(x)
+            z_ri = torch.cat((real, imag), dim=1).to(dtype=x.dtype)
+        else:
+            z = torch.fft.rfft2(x.float(), norm="ortho")
+            z_ri = torch.cat((z.real, z.imag), dim=1).to(dtype=x.dtype)
         z_ri = self.net(z_ri)
         real, imag = z_ri.float().chunk(2, dim=1)
-        z = torch.complex(real, imag)
-        out = torch.fft.irfft2(z, s=(height, width), norm="ortho")
+        if self.export_manual_fft:
+            out = self._manual_irfft2(real, imag, height, width)
+        else:
+            z = torch.complex(real, imag)
+            out = torch.fft.irfft2(z, s=(height, width), norm="ortho")
         return out.to(dtype=x.dtype)
 
 

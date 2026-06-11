@@ -11,14 +11,15 @@ precomputed narrowband inputs without falling back to its built-in resampler.
 
 from __future__ import annotations
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 import json
 import logging
 import os
 from pathlib import Path
+import tempfile
 import time
-from typing import TYPE_CHECKING, Iterable, Literal, Sequence
+from typing import TYPE_CHECKING, Iterable, Iterator, Literal, Sequence, TextIO
 
 if TYPE_CHECKING:
     import numpy as np
@@ -34,7 +35,7 @@ LOGGER = logging.getLogger("generate_resampled_manifest")
 @dataclass(frozen=True)
 class WorkItem:
     index: int
-    total: int
+    total: int | None
     source: Path
     input_dir: Path
     out_dir: Path
@@ -55,50 +56,21 @@ class WorkItem:
 @dataclass(frozen=True)
 class WorkResult:
     index: int
-    row: dict[str, str]
+    row: dict[str, str] | None
     message: str
+    skipped: bool = False
 
 
-def audio_paths(input_dir: Path, extensions: Sequence[str]) -> list[Path]:
+def audio_paths(input_dir: Path, extensions: Sequence[str]) -> Iterator[Path]:
     ext_set = {ext if ext.startswith(".") else f".{ext}" for ext in extensions}
-    return sorted(
-        path
-        for path in input_dir.rglob("*")
-        if path.is_file() and path.suffix.lower() in ext_set
-    )
+    for path in input_dir.rglob("*"):
+        if path.is_file() and path.suffix.lower() in ext_set:
+            yield path
 
 
 def audio_duration_seconds(path: Path) -> float:
     data, sample_rate = load_audio_with_torchaudio(path)
     return float(data.shape[0]) / float(sample_rate)
-
-
-def filter_paths_by_duration(
-    paths: Sequence[Path],
-    min_duration_seconds: float,
-    max_duration_seconds: float | None,
-) -> list[Path]:
-    kept: list[Path] = []
-    for path in paths:
-        duration = audio_duration_seconds(path)
-        if duration < min_duration_seconds:
-            LOGGER.info(
-                "Skipping %s: duration %.3fs < min %.3fs",
-                path,
-                duration,
-                min_duration_seconds,
-            )
-            continue
-        if max_duration_seconds is not None and duration > max_duration_seconds:
-            LOGGER.info(
-                "Skipping %s: duration %.3fs > max %.3fs",
-                path,
-                duration,
-                max_duration_seconds,
-            )
-            continue
-        kept.append(path)
-    return kept
 
 
 def load_audio(path: Path, channels: int) -> tuple[np.ndarray, int]:
@@ -247,38 +219,31 @@ def process_file(item: WorkItem) -> WorkResult:
         ),
     }
     if not item.overwrite and hr_path.exists() and lr_path.exists():
+        skip_result = duration_skip_result(item, audio_duration_seconds(item.source))
+        if skip_result is not None:
+            return skip_result
         LOGGER.info(
-            "[%d/%d] Reusing existing outputs for %s",
-            item.index,
-            item.total,
+            "[%s] Reusing existing outputs for %s",
+            progress_label(item.index, item.total),
             item.source,
         )
         LOGGER.debug("Existing HR: %s", hr_path)
         LOGGER.debug("Existing LR: %s", lr_path)
         return WorkResult(
-            item.index, row, f"[{item.index}/{item.total}] reused {lr_path}"
+            item.index,
+            row,
+            f"[{progress_label(item.index, item.total)}] reused {lr_path}",
         )
 
-    LOGGER.info("[%d/%d] Processing %s", item.index, item.total, item.source)
+    LOGGER.info("[%s] Processing %s", progress_label(item.index, item.total), item.source)
     audio, source_sr = load_audio(item.source, item.channels)
     source_duration = audio.shape[0] / float(source_sr)
-    if source_duration < item.min_duration_seconds:
-        raise ValueError(
-            f"{item.source} duration {source_duration:.3f}s is shorter than "
-            f"--min-duration-seconds {item.min_duration_seconds:.3f}s"
-        )
-    if (
-        item.max_duration_seconds is not None
-        and source_duration > item.max_duration_seconds
-    ):
-        raise ValueError(
-            f"{item.source} duration {source_duration:.3f}s is longer than "
-            f"--max-duration-seconds {item.max_duration_seconds:.3f}s"
-        )
+    skip_result = duration_skip_result(item, source_duration)
+    if skip_result is not None:
+        return skip_result
     LOGGER.info(
-        "[%d/%d] Resampling HR %s: %d Hz -> %d Hz",
-        item.index,
-        item.total,
+        "[%s] Resampling HR %s: %d Hz -> %d Hz",
+        progress_label(item.index, item.total),
         item.source,
         source_sr,
         item.target_sr,
@@ -293,9 +258,8 @@ def process_file(item: WorkItem) -> WorkResult:
         item.chunk_frames,
     )
     LOGGER.info(
-        "[%d/%d] Creating narrowband input: %d Hz -> %d Hz -> %d Hz",
-        item.index,
-        item.total,
+        "[%s] Creating narrowband input: %d Hz -> %d Hz -> %d Hz",
+        progress_label(item.index, item.total),
         item.target_sr,
         item.input_sr,
         item.target_sr,
@@ -319,22 +283,97 @@ def process_file(item: WorkItem) -> WorkResult:
         item.chunk_frames,
     )
 
-    LOGGER.info("[%d/%d] Writing HR %s", item.index, item.total, hr_path)
+    LOGGER.info("[%s] Writing HR %s", progress_label(item.index, item.total), hr_path)
     write_audio(hr_path, hr, item.target_sr)
-    LOGGER.info("[%d/%d] Writing LR %s", item.index, item.total, lr_path)
+    LOGGER.info("[%s] Writing LR %s", progress_label(item.index, item.total), lr_path)
     write_audio(lr_path, lr, item.target_sr)
     elapsed = time.perf_counter() - started
     LOGGER.info(
-        "[%d/%d] Finished %s in %.2fs",
-        item.index,
-        item.total,
+        "[%s] Finished %s in %.2fs",
+        progress_label(item.index, item.total),
         item.source,
         elapsed,
     )
     return WorkResult(
         item.index,
         row,
-        f"[{item.index}/{item.total}] {item.source} -> {lr_path} ({elapsed:.2f}s)",
+        f"[{progress_label(item.index, item.total)}] "
+        f"{item.source} -> {lr_path} ({elapsed:.2f}s)",
+    )
+
+
+def duration_skip_result(item: WorkItem, duration: float) -> WorkResult | None:
+    if duration < item.min_duration_seconds:
+        return WorkResult(
+            item.index,
+            None,
+            (
+                f"[{progress_label(item.index, item.total)}] skipped {item.source}: "
+                f"duration {duration:.3f}s < min "
+                f"{item.min_duration_seconds:.3f}s"
+            ),
+            skipped=True,
+        )
+    if (
+        item.max_duration_seconds is not None
+        and duration > item.max_duration_seconds
+    ):
+        return WorkResult(
+            item.index,
+            None,
+            (
+                f"[{progress_label(item.index, item.total)}] skipped {item.source}: "
+                f"duration {duration:.3f}s > max "
+                f"{item.max_duration_seconds:.3f}s"
+            ),
+            skipped=True,
+        )
+    return None
+
+
+def progress_label(index: int, total: int | None) -> str:
+    if total is None:
+        return str(index)
+    return f"{index}/{total}"
+
+
+def make_work_item(
+    index: int,
+    source: Path,
+    total: int | None,
+    input_dir: Path,
+    out_dir: Path,
+    manifest_path: Path,
+    input_sr: int,
+    target_sr: int,
+    channels: int,
+    quality: str,
+    backend: str,
+    chunk_frames: int,
+    absolute_paths: bool,
+    overwrite: bool,
+    log_level: str,
+    min_duration_seconds: float,
+    max_duration_seconds: float | None,
+) -> WorkItem:
+    return WorkItem(
+        index=index,
+        total=total,
+        source=source,
+        input_dir=input_dir,
+        out_dir=out_dir,
+        manifest_path=manifest_path,
+        input_sr=input_sr,
+        target_sr=target_sr,
+        channels=channels,
+        quality=quality,
+        backend=backend,
+        chunk_frames=chunk_frames,
+        absolute_paths=absolute_paths,
+        overwrite=overwrite,
+        log_level=log_level,
+        min_duration_seconds=min_duration_seconds,
+        max_duration_seconds=max_duration_seconds,
     )
 
 
@@ -356,6 +395,43 @@ def configure_logging(log_level: str) -> None:
         format="%(asctime)s %(levelname)s [%(processName)s] %(message)s",
         datefmt="%H:%M:%S",
     )
+
+
+def write_manifest_row(manifest_file: TextIO, row: dict[str, str] | None) -> bool:
+    if row is None:
+        return False
+    manifest_file.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return True
+
+
+def drain_completed_futures(
+    pending: set[Future[WorkResult]],
+    completed: dict[int, WorkResult],
+) -> None:
+    done, pending_items = wait(pending, return_when=FIRST_COMPLETED)
+    pending.clear()
+    pending.update(pending_items)
+    for future in done:
+        result = future.result()
+        completed[result.index] = result
+
+
+def flush_ordered_results(
+    completed: dict[int, WorkResult],
+    next_index: int,
+    manifest_file: TextIO,
+) -> tuple[int, int, int]:
+    written = 0
+    skipped = 0
+    while next_index in completed:
+        result = completed.pop(next_index)
+        if result.skipped:
+            skipped += 1
+        if write_manifest_row(manifest_file, result.row):
+            written += 1
+        LOGGER.info(result.message)
+        next_index += 1
+    return next_index, written, skipped
 
 
 def main(
@@ -449,6 +525,18 @@ def main(
         min=0.0,
     ),
     limit: int | None = option(None, "--limit", help="process at most N files", min=1),
+    prefetch: int = option(
+        4,
+        "--prefetch",
+        help="parallel backlog per worker; lower values use less memory",
+        min=1,
+    ),
+    sort_paths: bool = option(
+        False,
+        "--sort-paths",
+        "--sort_paths",
+        help="sort discovered paths before processing; requires loading all paths",
+    ),
 ) -> None:
     """Generate an FSC-Net training manifest with fast-audio-resampler."""
     configure_logging(log_level)
@@ -472,65 +560,149 @@ def main(
     extension_values = tuple(
         ext.strip().lower() for ext in extensions.split(",") if ext
     )
+    if not extension_values:
+        raise ValueError("--extensions must include at least one extension")
     LOGGER.info("Scanning %s for extensions: %s", input_dir, ", ".join(extension_values))
-    sources = audio_paths(input_dir, extension_values)
-    sources = filter_paths_by_duration(
-        sources, min_duration_seconds, max_duration_seconds
-    )
-    if limit is not None:
-        LOGGER.info("Limiting run to first %d discovered file(s)", limit)
-        sources = sources[:limit]
-    if not sources:
-        raise ValueError(f"No audio files found in {input_dir} after duration filtering")
-    LOGGER.info("Discovered %d audio file(s)", len(sources))
 
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     LOGGER.info("Writing generated audio under %s", out_dir)
     LOGGER.info("Writing manifest to %s", manifest_path)
-    work_items = [
-        WorkItem(
-            index=index,
-            total=len(sources),
-            source=source,
-            input_dir=input_dir,
-            out_dir=out_dir,
-            manifest_path=manifest_path,
-            input_sr=input_sr,
-            target_sr=target_sr,
-            channels=channels,
-            quality=quality,
-            backend=backend,
-            chunk_frames=chunk_frames,
-            absolute_paths=absolute_paths,
-            overwrite=overwrite,
-            log_level=log_level,
-            min_duration_seconds=min_duration_seconds,
-            max_duration_seconds=max_duration_seconds,
-        )
-        for index, source in enumerate(sources, start=1)
-    ]
 
     worker_count = resolve_workers(workers)
-    LOGGER.info("Processing %d files with %d worker(s)", len(work_items), worker_count)
-    if worker_count == 1:
-        results = [process_file(item) for item in work_items]
-        for result in results:
-            LOGGER.info(result.message)
-    else:
-        results = []
-        with ProcessPoolExecutor(max_workers=worker_count) as executor:
-            futures = [executor.submit(process_file, item) for item in work_items]
-            for future in as_completed(futures):
-                result = future.result()
-                results.append(result)
-                LOGGER.info(result.message)
+    LOGGER.info("Processing files with %d worker(s)", worker_count)
+    if limit is not None:
+        LOGGER.info("Limiting run to first %d discovered file(s)", limit)
+    if sort_paths:
+        LOGGER.info("Sorting discovered paths before processing")
 
-    rows = [result.row for result in sorted(results, key=lambda result: result.index)]
+    discovered = 0
+    written = 0
+    skipped = 0
+    temp_fd, temp_name = tempfile.mkstemp(
+        prefix=f".{manifest_path.name}.",
+        suffix=".tmp",
+        dir=manifest_path.parent,
+        text=True,
+    )
+    os.close(temp_fd)
+    temp_path = Path(temp_name)
+    try:
+        with temp_path.open("w", encoding="utf-8") as manifest_file:
+            sources = audio_paths(input_dir, extension_values)
+            if sort_paths:
+                sources = iter(sorted(sources))
+            if worker_count == 1:
+                for index, source in enumerate(sources, start=1):
+                    if limit is not None and index > limit:
+                        break
+                    discovered = index
+                    result = process_file(
+                        make_work_item(
+                            index,
+                            source,
+                            None,
+                            input_dir,
+                            out_dir,
+                            manifest_path,
+                            input_sr,
+                            target_sr,
+                            channels,
+                            quality,
+                            backend,
+                            chunk_frames,
+                            absolute_paths,
+                            overwrite,
+                            log_level,
+                            min_duration_seconds,
+                            max_duration_seconds,
+                        )
+                    )
+                    if result.skipped:
+                        skipped += 1
+                    if write_manifest_row(manifest_file, result.row):
+                        written += 1
+                    LOGGER.info(result.message)
+            else:
+                max_pending = max(1, worker_count * prefetch)
+                pending: set[Future[WorkResult]] = set()
+                completed: dict[int, WorkResult] = {}
+                next_write_index = 1
+                with ProcessPoolExecutor(max_workers=worker_count) as executor:
+                    for index, source in enumerate(sources, start=1):
+                        if limit is not None and index > limit:
+                            break
+                        discovered = index
+                        pending.add(
+                            executor.submit(
+                                process_file,
+                                make_work_item(
+                                    index,
+                                    source,
+                                    None,
+                                    input_dir,
+                                    out_dir,
+                                    manifest_path,
+                                    input_sr,
+                                    target_sr,
+                                    channels,
+                                    quality,
+                                    backend,
+                                    chunk_frames,
+                                    absolute_paths,
+                                    overwrite,
+                                    log_level,
+                                    min_duration_seconds,
+                                    max_duration_seconds,
+                                ),
+                            )
+                        )
+                        if len(pending) >= max_pending:
+                            drain_completed_futures(pending, completed)
+                            (
+                                next_write_index,
+                                rows_written,
+                                rows_skipped,
+                            ) = flush_ordered_results(
+                                completed, next_write_index, manifest_file
+                            )
+                            written += rows_written
+                            skipped += rows_skipped
 
-    with manifest_path.open("w", encoding="utf-8") as manifest_file:
-        for row in rows:
-            manifest_file.write(json.dumps(row, ensure_ascii=False) + "\n")
-    LOGGER.info("Wrote %d rows to %s", len(rows), manifest_path)
+                    while pending:
+                        drain_completed_futures(pending, completed)
+                        (
+                            next_write_index,
+                            rows_written,
+                            rows_skipped,
+                        ) = flush_ordered_results(
+                            completed, next_write_index, manifest_file
+                        )
+                        written += rows_written
+                        skipped += rows_skipped
+
+                    if completed:
+                        pending_indexes = ", ".join(str(index) for index in completed)
+                        raise RuntimeError(
+                            "Internal error: completed results could not be written "
+                            f"in order: {pending_indexes}"
+                        )
+
+        if discovered == 0:
+            raise ValueError(f"No audio files found in {input_dir}")
+        if written == 0:
+            raise ValueError("No audio files remained after duration filtering")
+        temp_path.replace(manifest_path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+    LOGGER.info(
+        "Wrote %d rows to %s (%d discovered, %d skipped)",
+        written,
+        manifest_path,
+        discovered,
+        skipped,
+    )
 
 
 if __name__ == "__main__":

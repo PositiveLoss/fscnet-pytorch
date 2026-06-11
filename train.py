@@ -397,7 +397,7 @@ def validate(
     count = 0
     pesq_count = 0
     eval_metrics_enabled = bool(optional_eval_metrics.get("enabled"))
-    for batch in tqdm(loader, desc="valid", leave=False):
+    for batch in tqdm(loader, desc="valid", leave=True):
         lr = batch["lr"].to(device)
         hr = batch["hr"].to(device)
         pred_wav: torch.Tensor | None = None
@@ -465,6 +465,12 @@ def run_validation(
     optimizer_d: torch.optim.Optimizer | None = None,
     scheduler_d=None,
 ) -> float:
+    started = time.perf_counter()
+    print(
+        f"validation start step={global_step} epoch={epoch + 1} "
+        f"batches={len(valid_loader)}",
+        flush=True,
+    )
     metrics = validate(
         model,
         recon_loss_fn,
@@ -474,7 +480,8 @@ def run_validation(
         autocast_dtype,
         optional_eval_metrics,
     )
-    print(metrics)
+    elapsed = time.perf_counter() - started
+    print(f"validation done step={global_step} seconds={elapsed:.1f} metrics={metrics}")
     if tracker is not None:
         valid_metrics: dict[str, TrackMetricValue] = {
             "step": global_step,
@@ -609,6 +616,13 @@ def main(
         "--batch-size",
         "--batch_size",
         help="defaults to the selected model size preset recommendation",
+    ),
+    valid_batch_size: int | None = option(
+        None,
+        "--valid-batch-size",
+        "--valid_batch_size",
+        help="validation batch size; defaults to --batch_size",
+        min=1,
     ),
     num_workers: int = option(
         4, "--num-workers", "--num_workers", help="DataLoader workers", min=0
@@ -793,6 +807,8 @@ def main(
     args.time_attention_rope = cfg.time_attention_rope
     if args.batch_size is None:
         args.batch_size = get_model_preset(args.model_size).suggested_batch_size
+    if args.valid_batch_size is None:
+        args.valid_batch_size = args.batch_size
     autocast_enabled, autocast_dtype, scaler_enabled, precision_name = (
         resolve_precision(args.precision, device)
     )
@@ -854,7 +870,7 @@ def main(
         )
         valid_loader = DataLoader(
             valid_ds,
-            batch_size=args.batch_size,
+            batch_size=args.valid_batch_size,
             shuffle=False,
             num_workers=args.num_workers,
         )

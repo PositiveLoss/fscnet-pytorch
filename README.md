@@ -129,10 +129,9 @@ checkpoint.
 Validation runs after each epoch by default when `--valid_manifest` is set.
 It reports reconstruction loss and Log-Spectral Distance (LSD), one of the
 FSC-Net paper's objective evaluation metrics. PESQ is attempted when the
-optional `pesq` package is available. NISQA is reported as unavailable until a
-stable in-process scorer/model path is wired. Missing optional metric
-dependencies are reported once and do not stop training. Use `--no-eval-metrics`
-to keep validation to loss-only reporting.
+optional `pesq` package is available. Missing optional metric dependencies are
+reported once and do not stop training. Use `--no-eval-metrics` to keep
+validation to loss-only reporting.
 
 16 kHz to 48 kHz:
 

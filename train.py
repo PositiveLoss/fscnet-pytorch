@@ -226,7 +226,6 @@ def init_optional_eval_metrics(
         "target_sr": target_sr,
         "pesq": None,
         "pesq_note_printed": False,
-        "nisqa_note_printed": False,
     }
     if not enabled:
         return state
@@ -236,15 +235,6 @@ def init_optional_eval_metrics(
         state["pesq"] = getattr(pesq_module, "pesq")
     except Exception as exc:
         state["pesq_error"] = str(exc)
-
-    try:
-        importlib.import_module("nisqa")
-        state["nisqa_error"] = (
-            "NISQA package detected, but this trainer does not have a stable "
-            "in-process NISQA scorer wired yet."
-        )
-    except Exception as exc:
-        state["nisqa_error"] = str(exc)
 
     return state
 
@@ -291,16 +281,6 @@ def maybe_pesq_batch(
                 state["pesq_note_printed"] = True
             return total, count
     return total, count
-
-
-def maybe_print_nisqa_note(state: OptionalMetricState) -> None:
-    if not state.get("enabled") or state.get("nisqa_note_printed"):
-        return
-    print(
-        "NISQA evaluation unavailable: "
-        f"{state.get('nisqa_error', 'not installed')}"
-    )
-    state["nisqa_note_printed"] = True
 
 
 def cosine_warmup_lambda(total_steps: int, warmup_steps: int, min_lr_ratio: float):
@@ -417,7 +397,6 @@ def validate(
             )
             total_pesq += pesq_total_batch
             pesq_count += pesq_count_batch
-    maybe_print_nisqa_note(optional_eval_metrics)
     model.train()
     metrics = {"valid_recon_loss": total_recon / max(1, count)}
     if eval_metrics_enabled:

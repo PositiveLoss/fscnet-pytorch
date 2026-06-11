@@ -157,6 +157,30 @@ python compare_time_attention.py --device cuda
 python compare_time_attention.py --device cuda --v2_no_qk_norm --v2_no_rope
 ```
 
+Track training with Trackio:
+
+```bash
+python train_fscnet.py \
+  --train_manifest train.txt \
+  --valid_manifest valid.txt \
+  --out_dir runs/fscnet_tracked \
+  --model_size compact \
+  --trackio \
+  --trackio_project fscnet \
+  --trackio_name compact_4k48 \
+  --amp
+```
+
+Trackio logs locally by default:
+
+```bash
+trackio show --project fscnet
+```
+
+To send metrics to a hosted Hugging Face Space or self-hosted Trackio server,
+add `--trackio_space_id username/space-name` or
+`--trackio_server_url http://host:port`.
+
 ## Inference
 
 For a real narrowband file:

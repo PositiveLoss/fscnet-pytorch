@@ -10,10 +10,13 @@ Example:
 from __future__ import annotations
 
 import argparse
+import atexit
+import importlib
 import json
 import math
 from pathlib import Path
-from typing import Sequence, cast
+from types import ModuleType
+from typing import Any, Sequence, cast
 
 import torch
 from torch import nn
@@ -55,6 +58,35 @@ MODEL_OVERRIDE_FIELDS = (
     "ffc_ratio",
     "dropout",
 )
+
+TrackMetricValue = int | float | str | bool | None
+
+
+class TrackioRun:
+    def __init__(self, module: ModuleType) -> None:
+        self.module = module
+        self.finished = False
+        self.disabled = False
+
+    def log(self, metrics: dict[str, TrackMetricValue]) -> None:
+        if self.disabled or self.finished:
+            return
+        try:
+            log_fn = getattr(self.module, "log")
+            log_fn(metrics)
+        except Exception as exc:
+            self.disabled = True
+            print(f"Trackio logging disabled after error: {exc}")
+
+    def finish(self) -> None:
+        if self.finished:
+            return
+        self.finished = True
+        try:
+            finish_fn = getattr(self.module, "finish")
+            finish_fn()
+        except Exception as exc:
+            print(f"Trackio finish failed: {exc}")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -129,6 +161,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--clip_grad_norm", type=float, default=5.0)
     p.add_argument("--amp", action="store_true", help="mixed precision on CUDA")
 
+    p.add_argument("--trackio", action="store_true", help="enable Trackio logging")
+    p.add_argument("--trackio_project", default="fscnet", help="Trackio project name")
+    p.add_argument("--trackio_name", default=None, help="optional Trackio run name")
+    p.add_argument("--trackio_group", default=None, help="optional Trackio run group")
+    p.add_argument(
+        "--trackio_space_id",
+        default=None,
+        help="optional Hugging Face Space id for hosted Trackio logs",
+    )
+    p.add_argument(
+        "--trackio_server_url",
+        default=None,
+        help="optional self-hosted Trackio server URL",
+    )
+    p.add_argument(
+        "--trackio_log_every",
+        type=int,
+        default=1,
+        help="log training metrics every N optimizer steps; <=0 disables step logs",
+    )
+
     p.add_argument("--mrstft_weight", type=float, default=1.0)
     p.add_argument("--lsd_weight", type=float, default=0.1)
     p.add_argument("--complex_l1_weight", type=float, default=1.0)
@@ -166,6 +219,48 @@ def print_model_sizes() -> None:
             f"attention={cfg.time_attention} windows={preset.progressive_windows} "
             f"suggested_batch_size={preset.suggested_batch_size}"
         )
+
+
+def init_trackio(
+    args: argparse.Namespace,
+    model_config: dict[str, Any],
+    windows: Sequence[int],
+    parameter_count: int,
+) -> TrackioRun | None:
+    if not args.trackio:
+        return None
+    try:
+        trackio = importlib.import_module("trackio")
+    except ImportError as exc:
+        raise RuntimeError(
+            "Trackio logging was requested with --trackio, but the trackio package "
+            "is not installed in the current environment."
+        ) from exc
+
+    init_kwargs: dict[str, Any] = {
+        "project": args.trackio_project,
+        "config": {
+            "args": vars(args),
+            "model": model_config,
+            "windows": tuple(windows),
+            "parameters": parameter_count,
+        },
+    }
+    for arg_name, key in (
+        ("trackio_name", "name"),
+        ("trackio_group", "group"),
+        ("trackio_space_id", "space_id"),
+        ("trackio_server_url", "server_url"),
+    ):
+        value = getattr(args, arg_name)
+        if value:
+            init_kwargs[key] = value
+
+    init_fn = getattr(trackio, "init")
+    init_fn(**init_kwargs)
+    run = TrackioRun(trackio)
+    atexit.register(run.finish)
+    return run
 
 
 def cosine_warmup_lambda(total_steps: int, warmup_steps: int, min_lr_ratio: float):
@@ -273,8 +368,9 @@ def main() -> None:
         args.batch_size = get_model_preset(args.model_size).suggested_batch_size
     mrstft_fft_sizes = tuple(int(x) for x in args.mrstft_fft_sizes.split(",") if x)
     model = FSCNet(cfg).to(device)
+    parameter_count = count_parameters(model)
     print(f"Model preset: {args.model_size}; windows={windows}; config={cfg.to_dict()}")
-    print(f"Generator parameters: {count_parameters(model) / 1e6:.3f} M")
+    print(f"Generator parameters: {parameter_count / 1e6:.3f} M")
 
     train_ds = BandwidthExtensionDataset(
         args.train_manifest,
@@ -377,6 +473,7 @@ def main() -> None:
 
     scaler = GradScaler("cuda", enabled=args.amp and device.type == "cuda")
     model.train()
+    tracker = init_trackio(args, cfg.to_dict(), windows, parameter_count)
 
     for epoch in range(start_epoch, args.epochs):
         pbar = tqdm(train_loader, desc=f"epoch {epoch + 1}/{args.epochs}")
@@ -473,10 +570,40 @@ def main() -> None:
                 d=f"{d_loss_val:.4f}",
                 lr=f"{scheduler_g.get_last_lr()[0]:.2e}",
             )
+            if (
+                tracker is not None
+                and args.trackio_log_every > 0
+                and global_step % args.trackio_log_every == 0
+            ):
+                train_metrics: dict[str, TrackMetricValue] = {
+                    "step": global_step,
+                    "epoch": epoch + 1,
+                    "train/recon_loss": logs["recon_loss"],
+                    "train/g_loss": float(loss_g.detach().cpu()),
+                    "train/d_loss": d_loss_val,
+                    "train/adv_loss": float(adv_val.detach().cpu()),
+                    "train/fm_loss": float(fm_val.detach().cpu()),
+                    "train/lr_g": scheduler_g.get_last_lr()[0],
+                    "train/use_adv": use_adv,
+                }
+                if scheduler_d is not None:
+                    train_metrics["train/lr_d"] = scheduler_d.get_last_lr()[0]
+                for key, value in logs.items():
+                    if key != "recon_loss":
+                        train_metrics[f"train/{key}"] = value
+                tracker.log(train_metrics)
 
         if valid_loader is not None and (epoch + 1) % args.valid_every == 0:
             metrics = validate(model, recon_loss_fn, valid_loader, device, args.amp)
             print(metrics)
+            if tracker is not None:
+                tracker.log(
+                    {
+                        "step": global_step,
+                        "epoch": epoch + 1,
+                        "valid/recon_loss": metrics["valid_recon_loss"],
+                    }
+                )
 
         if (epoch + 1) % args.save_every == 0:
             save_checkpoint(
@@ -505,6 +632,17 @@ def main() -> None:
                 optimizer_d=optimizer_d,
                 scheduler_d=scheduler_d,
             )
+            if tracker is not None:
+                tracker.log(
+                    {
+                        "step": global_step,
+                        "epoch": epoch + 1,
+                        "checkpoint/epoch": epoch + 1,
+                        "checkpoint/global_step": global_step,
+                    }
+                )
+    if tracker is not None:
+        tracker.finish()
 
 
 if __name__ == "__main__":

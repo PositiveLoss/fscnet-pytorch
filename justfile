@@ -101,6 +101,25 @@ train train_manifest valid_manifest="" out_dir="runs/fscnet" model_size="compact
       --model_size {{model_size}} \
       --amp
 
+# Train with Trackio enabled. Example: just train-trackio train.txt valid.txt runs/fscnet medium run_001
+train-trackio train_manifest valid_manifest="" out_dir="runs/fscnet" model_size="compact" run_name="":
+    valid_arg="{{valid_manifest}}"; \
+    if [[ -n "$valid_arg" ]]; then valid_arg="--valid_manifest $valid_arg"; fi; \
+    name_arg="{{run_name}}"; \
+    if [[ -n "$name_arg" ]]; then name_arg="--trackio_name $name_arg"; fi; \
+    uv run python train_fscnet.py \
+      --train_manifest {{train_manifest}} \
+      $valid_arg \
+      --out_dir {{out_dir}} \
+      --model_size {{model_size}} \
+      --trackio \
+      $name_arg \
+      --amp
+
+# Open the local Trackio UI for a project.
+trackio-show project="fscnet":
+    uv run trackio show --project {{project}}
+
 # Train 4 kHz to 48 kHz.
 train-4k48 train_manifest valid_manifest="" out_dir="runs/fscnet_4k48k" model_size="compact":
     valid_arg="{{valid_manifest}}"; \

@@ -7,8 +7,8 @@ default:
 sync:
     uv sync --all-groups
 
-# Run lint and type checks.
-check: lint typecheck
+# Run lint, type checks, and tests.
+check: lint typecheck test
 
 # Run Ruff.
 lint:
@@ -25,6 +25,10 @@ typecheck-warn:
 # Show configured Pyrefly files and import paths.
 typecheck-config:
     uv run pyrefly dump-config
+
+# Run unit tests.
+test:
+    uv run python -m unittest discover -s tests
 
 # List model size presets.
 sizes:

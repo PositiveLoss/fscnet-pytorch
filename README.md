@@ -51,6 +51,8 @@ uv run python generate_resampled_manifest.py \
   --target_sr 48000 \
   --quality balanced \
   --backend auto \
+  --min_duration_seconds 0.1 \
+  --max_duration_seconds 30 \
   --workers 0
 ```
 
@@ -58,12 +60,25 @@ The script writes `data/fscnet_4k48/manifest.jsonl` with `hr_path` and
 `lr_path` entries. Files under `lr_4000` are stored at `--target_sr`; the
 `4000` means they were downsampled through a 4 kHz bottleneck and resampled
 back to the target rate for model input. `--workers 0` uses all available CPU
-cores; set `--workers 1` for sequential processing. Use that manifest directly
-for training:
+cores; set `--workers 1` for sequential processing. Files shorter than 0.1s or
+longer than 30s are skipped by default.
+
+Split the generated manifest into train and validation files:
+
+```bash
+uv run python split_manifest.py \
+  --manifest data/fscnet_4k48/manifest.jsonl \
+  --valid_ratio 0.1 \
+  --seed 1234
+```
+
+This writes `data/fscnet_4k48/train.jsonl` and `data/fscnet_4k48/valid.json`.
+Use those manifests for training:
 
 ```bash
 uv run python train.py \
-  --train_manifest data/fscnet_4k48/manifest.jsonl \
+  --train_manifest data/fscnet_4k48/train.jsonl \
+  --valid_manifest data/fscnet_4k48/valid.json \
   --out_dir runs/fscnet_4k48 \
   --input_sr 4000 \
   --target_sr 48000

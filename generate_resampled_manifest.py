@@ -48,6 +48,8 @@ class WorkItem:
     absolute_paths: bool
     overwrite: bool
     log_level: str
+    min_duration_seconds: float
+    max_duration_seconds: float | None
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,49 @@ def audio_paths(input_dir: Path, extensions: Sequence[str]) -> list[Path]:
         for path in input_dir.rglob("*")
         if path.is_file() and path.suffix.lower() in ext_set
     )
+
+
+def audio_duration_seconds(path: Path) -> float:
+    import soundfile as sf
+
+    try:
+        info = sf.info(path)
+        return float(info.frames) / float(info.samplerate)
+    except sf.SoundFileError as exc:
+        LOGGER.debug("soundfile could not inspect %s: %s", path, exc)
+        import torchaudio
+
+        info_fn = getattr(torchaudio, "info")
+        info = info_fn(str(path))
+        return float(info.num_frames) / float(info.sample_rate)
+
+
+def filter_paths_by_duration(
+    paths: Sequence[Path],
+    min_duration_seconds: float,
+    max_duration_seconds: float | None,
+) -> list[Path]:
+    kept: list[Path] = []
+    for path in paths:
+        duration = audio_duration_seconds(path)
+        if duration < min_duration_seconds:
+            LOGGER.info(
+                "Skipping %s: duration %.3fs < min %.3fs",
+                path,
+                duration,
+                min_duration_seconds,
+            )
+            continue
+        if max_duration_seconds is not None and duration > max_duration_seconds:
+            LOGGER.info(
+                "Skipping %s: duration %.3fs > max %.3fs",
+                path,
+                duration,
+                max_duration_seconds,
+            )
+            continue
+        kept.append(path)
+    return kept
 
 
 def load_audio(path: Path, channels: int) -> tuple[np.ndarray, int]:
@@ -231,6 +276,20 @@ def process_file(item: WorkItem) -> WorkResult:
 
     LOGGER.info("[%d/%d] Processing %s", item.index, item.total, item.source)
     audio, source_sr = load_audio(item.source, item.channels)
+    source_duration = audio.shape[0] / float(source_sr)
+    if source_duration < item.min_duration_seconds:
+        raise ValueError(
+            f"{item.source} duration {source_duration:.3f}s is shorter than "
+            f"--min-duration-seconds {item.min_duration_seconds:.3f}s"
+        )
+    if (
+        item.max_duration_seconds is not None
+        and source_duration > item.max_duration_seconds
+    ):
+        raise ValueError(
+            f"{item.source} duration {source_duration:.3f}s is longer than "
+            f"--max-duration-seconds {item.max_duration_seconds:.3f}s"
+        )
     LOGGER.info(
         "[%d/%d] Resampling HR %s: %d Hz -> %d Hz",
         item.index,
@@ -390,12 +449,33 @@ def main(
         "--log_level",
         help="logging level: DEBUG, INFO, WARNING, ERROR, or CRITICAL",
     ),
+    min_duration_seconds: float = option(
+        0.1,
+        "--min-duration-seconds",
+        "--min_duration_seconds",
+        help="skip files shorter than this many seconds",
+        min=0.0,
+    ),
+    max_duration_seconds: float | None = option(
+        30.0,
+        "--max-duration-seconds",
+        "--max_duration_seconds",
+        help="skip files longer than this many seconds; set 0 for no maximum",
+        min=0.0,
+    ),
     limit: int | None = option(None, "--limit", help="process at most N files", min=1),
 ) -> None:
     """Generate an FSC-Net training manifest with fast-audio-resampler."""
     configure_logging(log_level)
     if channels not in {1, 2}:
         raise ValueError("--channels must be 1 or 2")
+    if max_duration_seconds == 0.0:
+        max_duration_seconds = None
+    if (
+        max_duration_seconds is not None
+        and max_duration_seconds < min_duration_seconds
+    ):
+        raise ValueError("--max-duration-seconds must be >= --min-duration-seconds")
 
     input_dir = input_dir.expanduser().resolve()
     out_dir = out_dir.expanduser().resolve()
@@ -409,11 +489,14 @@ def main(
     )
     LOGGER.info("Scanning %s for extensions: %s", input_dir, ", ".join(extension_values))
     sources = audio_paths(input_dir, extension_values)
+    sources = filter_paths_by_duration(
+        sources, min_duration_seconds, max_duration_seconds
+    )
     if limit is not None:
         LOGGER.info("Limiting run to first %d discovered file(s)", limit)
         sources = sources[:limit]
     if not sources:
-        raise ValueError(f"No audio files found in {input_dir}")
+        raise ValueError(f"No audio files found in {input_dir} after duration filtering")
     LOGGER.info("Discovered %d audio file(s)", len(sources))
 
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -436,6 +519,8 @@ def main(
             absolute_paths=absolute_paths,
             overwrite=overwrite,
             log_level=log_level,
+            min_duration_seconds=min_duration_seconds,
+            max_duration_seconds=max_duration_seconds,
         )
         for index, source in enumerate(sources, start=1)
     ]

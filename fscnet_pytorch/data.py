@@ -29,7 +29,15 @@ def read_manifest(path: str | Path) -> List[Dict[str, str]]:
     suffix = path.suffix.lower()
     items: List[Dict[str, str]] = []
 
-    if suffix == ".jsonl":
+    if suffix == ".json":
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            raise ValueError(f"JSON manifest must contain a list of rows: {path}")
+        for row in data:
+            if not isinstance(row, dict):
+                raise ValueError(f"JSON manifest rows must be objects: {path}")
+            items.append(normalize_manifest_row(row, base))
+    elif suffix == ".jsonl":
         with path.open("r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()

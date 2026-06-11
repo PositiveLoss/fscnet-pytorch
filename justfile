@@ -39,6 +39,13 @@ manifest input_dir out_dir input_sr="4000" target_sr="48000" workers="0":
       --target_sr {{target_sr}} \
       --workers {{workers}}
 
+# Split a manifest into train.jsonl and valid.json.
+split-manifest manifest valid_ratio="0.1" seed="1234":
+    uv run python split_manifest.py \
+      --manifest {{manifest}} \
+      --valid_ratio {{valid_ratio}} \
+      --seed {{seed}}
+
 # Compare time attention blocks. Override with: just compare-attn cpu 1 32 64 64
 compare-attn device="cuda" batch="2" channels="48" freq_groups="257" frames="126":
     uv run python compare_time_attention.py \

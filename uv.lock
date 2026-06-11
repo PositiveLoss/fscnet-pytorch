@@ -131,9 +131,10 @@ nvtx = [
 [[package]]
 name = "fast-audio-resampler"
 version = "0.3.0"
-source = { url = "https://github.com/RustedBytes/fast-audio-resampler/releases/download/v0.3.0/fast_audio_resampler-0.3.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" }
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/71/17/ea061c2e359512671b35e3974605fb0832cdcda861d75a74fd3c9e0cfc6c/fast_audio_resampler-0.3.0.tar.gz", hash = "sha256:fad0cc042a67f6e816226cea41673870d2937d2de9b716c3da4ebf9589f65dbf", size = 49407, upload-time = "2026-06-11T12:17:51.365Z" }
 wheels = [
-    { url = "https://github.com/RustedBytes/fast-audio-resampler/releases/download/v0.3.0/fast_audio_resampler-0.3.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e71c429b1cf98a7759e7eee90586189232c21da2e9e9956f159704fa4682032f" },
+    { url = "https://files.pythonhosted.org/packages/d5/56/f6ec4548aad0d663083455db0460e0e23b70a64c4ebbdb79efe6b3ee38e7/fast_audio_resampler-0.3.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8494040c73137c091c9d97dea85975ed382b759ea9e46615ed89ac89fdc9fbb3", size = 293100, upload-time = "2026-06-11T12:17:50.171Z" },
 ]
 
 [[package]]
@@ -185,7 +186,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fast-audio-resampler", url = "https://github.com/RustedBytes/fast-audio-resampler/releases/download/v0.3.0/fast_audio_resampler-0.3.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" },
+    { name = "fast-audio-resampler", specifier = ">=0.3.0" },
     { name = "numpy", specifier = ">=2.4.6" },
     { name = "onnx", specifier = ">=1.21.0" },
     { name = "onnxruntime-gpu", extras = ["cuda"], specifier = ">=1.26.0" },

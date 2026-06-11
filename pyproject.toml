@@ -3,6 +3,7 @@ name = "fscnet-pytorch"
 version = "0.1.0"
 description = "FSC-Net: Integrating Fast Fourier Convolutions and Progressive Learning for Speech Bandwidth Extension."
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.14"
 dependencies = [
     "fast-audio-resampler @ https://github.com/RustedBytes/fast-audio-resampler/releases/download/v0.3.0/fast_audio_resampler-0.3.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",

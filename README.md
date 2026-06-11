@@ -307,3 +307,7 @@ opset-18 form when asked to convert this graph to opset 26.
 - The default `--num_blocks 5` matches the five progressive windows shown in the demo: `257,65,17,5,1`.
 - The default generator is intentionally compact. Increase `--channels` and `--rnn_hidden` if you have GPU memory and want a larger model.
 - The optional discriminator is not required for a first run. Start with `--adv_weight 0` and add GAN training later.
+
+## License
+
+This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE).

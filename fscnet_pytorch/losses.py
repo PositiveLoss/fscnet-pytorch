@@ -136,7 +136,7 @@ def complex_l1(pred_ri: torch.Tensor, target_ri: torch.Tensor) -> torch.Tensor:
 @dataclass
 class StageLossWeights:
     mrstft: float = 1.0
-    lsd: float = 0.1
+    lsd: float = 5.0
     complex_l1: float = 1.0
 
 

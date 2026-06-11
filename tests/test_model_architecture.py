@@ -12,9 +12,21 @@ from fscnet_pytorch.model import (
     cws_merge,
     cws_split,
 )
+from fscnet_pytorch.config import get_model_preset
+from fscnet_pytorch.losses import make_progressive_targets
 
 
 class ModelArchitectureTest(unittest.TestCase):
+    def test_compact_preset_matches_article_constants(self) -> None:
+        preset = get_model_preset("compact")
+
+        self.assertEqual(preset.config.num_blocks, 5)
+        self.assertEqual(preset.config.subbands, 3)
+        self.assertEqual(preset.config.n_fft, 1536)
+        self.assertEqual(preset.config.win_length, 1536)
+        self.assertEqual(preset.config.hop_length, 768)
+        self.assertEqual(preset.progressive_windows, (257, 65, 17, 5, 1))
+
     def test_cws_split_merge_roundtrip(self) -> None:
         x = torch.randn(2, 2, 10, 4)
 
@@ -78,6 +90,15 @@ class ModelArchitectureTest(unittest.TestCase):
         self.assertEqual(input_ri.shape[1], 2)
         self.assertTrue(all(output.shape == input_ri.shape for output in outputs))
         self.assertEqual(model(wav).shape, input_ri.shape)
+
+    def test_progressive_final_window_recovers_hr_target(self) -> None:
+        input_ri = torch.randn(1, 2, 9, 3)
+        target_ri = torch.randn(1, 2, 9, 3)
+
+        targets = make_progressive_targets(input_ri, target_ri, windows=(257, 65, 1))
+
+        self.assertEqual(len(targets), 3)
+        torch.testing.assert_close(targets[-1], target_ri)
 
 
 if __name__ == "__main__":

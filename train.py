@@ -717,7 +717,7 @@ def main(
         1.0, "--mrstft-weight", "--mrstft_weight", help="MR-STFT loss weight"
     ),
     lsd_weight: float = option(
-        0.1, "--lsd-weight", "--lsd_weight", help="LSD loss weight"
+        5.0, "--lsd-weight", "--lsd_weight", help="LSD loss weight"
     ),
     complex_l1_weight: float = option(
         1.0, "--complex-l1-weight", "--complex_l1_weight", help="complex L1 loss weight"
@@ -729,14 +729,14 @@ def main(
         help="MR-STFT FFT sizes",
     ),
     adv_weight: float = option(
-        0.0,
+        0.34,
         "--adv-weight",
         "--adv_weight",
         help="set >0 to enable per-stage LSGAN",
         min=0.0,
     ),
     fm_weight: float = option(
-        10.0, "--fm-weight", "--fm_weight", help="feature matching weight"
+        0.1, "--fm-weight", "--fm_weight", help="feature matching weight"
     ),
     adv_start_step: int = option(
         0, "--adv-start-step", "--adv_start_step", help="adversarial start step", min=0

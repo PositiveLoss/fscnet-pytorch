@@ -196,16 +196,15 @@ uv run python train.py \
   --precision fp16
 ```
 
-Enable adversarial training after the reconstruction loss starts converging:
+Use the article's adversarial loss weights:
 
 ```bash
 uv run python train.py \
   --train_manifest train.txt \
   --valid_manifest valid.txt \
   --out_dir runs/fscnet_gan \
-  --adv_weight 0.05 \
-  --adv_start_step 10000 \
-  --fm_weight 10
+  --adv_weight 0.34 \
+  --fm_weight 0.1
 ```
 
 Try the SDPA-based time attention variant:
@@ -311,7 +310,7 @@ opset-18 form when asked to convert this graph to opset 26.
 
 - The default `--num_blocks 5` matches the five progressive windows shown in the demo: `257,65,17,5,1`.
 - The default generator is intentionally compact. Increase `--channels` and `--rnn_hidden` if you have GPU memory and want a larger model.
-- The optional discriminator is not required for a first run. Start with `--adv_weight 0` and add GAN training later.
+- GAN training is enabled by default with the article's `--adv_weight 0.34` and `--fm_weight 0.1`; use `--adv_weight 0` for reconstruction-only training.
 
 ## License
 

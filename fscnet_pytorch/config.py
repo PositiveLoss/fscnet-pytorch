@@ -93,7 +93,9 @@ def get_model_preset(name: str) -> FSCNetModelPreset:
         return MODEL_PRESETS[name]
     except KeyError as exc:
         valid = ", ".join(model_preset_names())
-        raise ValueError(f"Unknown model preset {name!r}. Valid presets: {valid}") from exc
+        raise ValueError(
+            f"Unknown model preset {name!r}. Valid presets: {valid}"
+        ) from exc
 
 
 def parse_progressive_windows(text: str) -> tuple[int, ...]:

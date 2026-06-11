@@ -252,7 +252,9 @@ def main() -> None:
         print_model_sizes()
         return
     if args.train_manifest is None:
-        raise ValueError("--train_manifest is required unless --list_model_sizes is used")
+        raise ValueError(
+            "--train_manifest is required unless --list_model_sizes is used"
+        )
 
     if args.torch_num_threads and args.torch_num_threads > 0:
         torch.set_num_threads(args.torch_num_threads)
@@ -271,10 +273,7 @@ def main() -> None:
         args.batch_size = get_model_preset(args.model_size).suggested_batch_size
     mrstft_fft_sizes = tuple(int(x) for x in args.mrstft_fft_sizes.split(",") if x)
     model = FSCNet(cfg).to(device)
-    print(
-        f"Model preset: {args.model_size}; windows={windows}; "
-        f"config={cfg.to_dict()}"
-    )
+    print(f"Model preset: {args.model_size}; windows={windows}; config={cfg.to_dict()}")
     print(f"Generator parameters: {count_parameters(model) / 1e6:.3f} M")
 
     train_ds = BandwidthExtensionDataset(

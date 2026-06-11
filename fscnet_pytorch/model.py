@@ -350,7 +350,9 @@ class TFFFCBlock(nn.Module):
         self.ffc2 = ResidualFFC(cfg.channels, cfg.ffc_ratio, cfg.dropout)
         self.intra_rnn = IntraFrequencyRNN(cfg.channels, cfg.rnn_hidden, cfg.dropout)
         if cfg.time_attention == "v1":
-            self.attn = TimeSelfAttention(cfg.channels, cfg.attention_heads, cfg.dropout)
+            self.attn = TimeSelfAttention(
+                cfg.channels, cfg.attention_heads, cfg.dropout
+            )
         elif cfg.time_attention == "v2":
             self.attn = TimeSelfAttentionV2(
                 cfg.channels,
